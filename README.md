@@ -4,6 +4,8 @@ A terminal backgammon game (Go + [Bubble Tea](https://github.com/charmbracelet/b
 played against a local LLM served by [llama.cpp](https://github.com/ggml-org/llama.cpp),
 in one of six personas.
 
+![a screenshot](screenshot.png)
+
 ```sh
 go build -o backgammon . && ./backgammon
 ./backgammon --llm-url http://localhost:8888 --model ornith-1.0-35b-Q4_K_M
