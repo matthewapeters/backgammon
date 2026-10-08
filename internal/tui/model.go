@@ -4,6 +4,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"slices"
 	"time"
 
@@ -26,7 +27,14 @@ const (
 	phaseGameOver
 )
 
-const aiStepDelay = 700 * time.Millisecond
+const (
+	aiStepDelay = 700 * time.Millisecond
+
+	// Each die tumbles for a random time in [rollMin, rollMax).
+	rollMin   = 500 * time.Millisecond
+	rollMax   = 2 * time.Second
+	rollFrame = 70 * time.Millisecond
+)
 
 type logEntry struct {
 	who  string // "" for narration
@@ -56,6 +64,16 @@ type Model struct {
 	aiLast  [2]int     // last AI move's from/to in the AI's numbering, -1 if none
 	review  *ai.Review // grade of the human's last play, for the AI to react to
 
+	// Dice roll animation. While rolling, the dice show roll.faces; each die
+	// lands on m.dice when its end time passes.
+	roll struct {
+		active  bool
+		id      int // ignores ticks from a superseded roll
+		faces   [2]int
+		ends    [2]time.Time
+		pending *ai.Decision // AI decision that arrived mid-roll
+	}
+
 	opening   [2]int // opening roll: human, AI
 	winner    game.Player
 	winKind   game.WinKind
@@ -77,6 +95,7 @@ func New(client *ai.Client) Model {
 type (
 	aiDecisionMsg struct{ dec ai.Decision }
 	aiStepMsg     struct{}
+	rollTickMsg   struct{ id int }
 	reactionMsg   struct{ text string }
 	warmupMsg     struct{ err error }
 )
@@ -111,7 +130,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case rollTickMsg:
+		return m.tickRoll(msg.id)
+
 	case aiDecisionMsg:
+		if m.roll.active {
+			m.roll.pending = &msg.dec
+			return m, nil
+		}
 		return m.applyAIDecision(msg.dec)
 
 	case aiStepMsg:
@@ -128,6 +154,9 @@ func (m Model) handleKey(k string) (tea.Model, tea.Cmd) {
 	if k == "q" {
 		return m, tea.Quit
 	}
+	if m.roll.active {
+		return m, nil
+	}
 	switch m.phase {
 	case phasePersona:
 		return m.keyPersona(k)
@@ -137,7 +166,7 @@ func (m Model) handleKey(k string) (tea.Model, tea.Cmd) {
 		}
 	case phaseHumanRoll:
 		if isConfirm(k) || k == "r" {
-			m.rollForHuman()
+			return m, m.startRoll(game.RollDice())
 		}
 	case phaseHumanMove:
 		return m.keyMove(k)
@@ -187,6 +216,7 @@ func (m Model) keyPersona(k string) (tea.Model, tea.Cmd) {
 
 func (m Model) newGame() (tea.Model, tea.Cmd) {
 	m.board = game.NewBoard()
+	m.roll.active = false
 	m.review = nil
 	m.made = nil
 	m.plays = nil
@@ -216,7 +246,61 @@ func (m Model) finishOpening() (tea.Model, tea.Cmd) {
 	return m.startAITurn(game.Dice{m.opening[1], m.opening[0]})
 }
 
-func (m *Model) rollForHuman() { m.startHumanTurn(game.RollDice()) }
+// startRoll sets m.dice to d and starts tumbling the dice towards it.
+func (m *Model) startRoll(d game.Dice) tea.Cmd {
+	m.dice = d
+	now := time.Now()
+	for i := range m.roll.ends {
+		m.roll.faces[i] = game.RollDie()
+		m.roll.ends[i] = now.Add(rollMin + rand.N(rollMax-rollMin))
+	}
+	m.roll.active = true
+	m.roll.pending = nil
+	m.roll.id++
+	return rollTick(m.roll.id)
+}
+
+func rollTick(id int) tea.Cmd {
+	return tea.Tick(rollFrame, func(time.Time) tea.Msg { return rollTickMsg{id} })
+}
+
+// tickRoll advances the roll animation and, once both dice have landed,
+// continues the turn the roll was for.
+func (m Model) tickRoll(id int) (tea.Model, tea.Cmd) {
+	if !m.roll.active || id != m.roll.id {
+		return m, nil
+	}
+	now := time.Now()
+	settled := true
+	for i, end := range m.roll.ends {
+		if now.Before(end) {
+			settled = false
+			// Always change face so the tumble is visible.
+			m.roll.faces[i] = (m.roll.faces[i]+rand.IntN(5))%6 + 1
+		}
+	}
+	if !settled {
+		return m, rollTick(id)
+	}
+	m.roll.active = false
+	switch {
+	case m.phase == phaseHumanRoll:
+		m.startHumanTurn(m.dice)
+	case m.roll.pending != nil:
+		dec := *m.roll.pending
+		m.roll.pending = nil
+		return m.applyAIDecision(dec)
+	}
+	return m, nil
+}
+
+// dieFace is what die i currently shows, mid-roll or not.
+func (m Model) dieFace(i int) int {
+	if m.roll.active && time.Now().Before(m.roll.ends[i]) {
+		return m.roll.faces[i]
+	}
+	return m.dice[i]
+}
 
 func (m *Model) startHumanTurn(d game.Dice) {
 	m.phase = phaseHumanMove
@@ -338,7 +422,9 @@ func (m Model) commitHumanTurn() (tea.Model, tea.Cmd) {
 	if w, won := m.board.Winner(); won {
 		return m.endGame(w)
 	}
-	return m.startAITurn(game.RollDice())
+	roll := m.startRoll(game.RollDice())
+	next, think := m.startAITurn(m.dice)
+	return next, tea.Batch(think, roll)
 }
 
 func (m Model) startAITurn(d game.Dice) (tea.Model, tea.Cmd) {

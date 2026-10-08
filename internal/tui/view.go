@@ -91,7 +91,7 @@ func (m Model) renderPanel() string {
 		}
 		logText = append(logText, strings.Split(line, "\n")...)
 	}
-	if m.phase == phaseAIThinking {
+	if m.phase == phaseAIThinking && !m.roll.active {
 		logText = append(logText, m.spinner.View()+dimStyle.Render(" "+shortName(m.persona)+" is thinking…"))
 	}
 	if len(logText) > logLines {
@@ -107,7 +107,15 @@ func shortName(p ai.Persona) string {
 	return f[len(f)-1]
 }
 
-func (m Model) statusLine() string { return m.status }
+func (m Model) statusLine() string {
+	if m.roll.active {
+		if m.phase == phaseHumanRoll {
+			return "Rolling…"
+		}
+		return m.persona.Name + " is rolling…"
+	}
+	return m.status
+}
 
 func (m Model) helpLine() string {
 	switch m.phase {

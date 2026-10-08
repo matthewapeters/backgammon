@@ -2,6 +2,7 @@ package tui
 
 import (
 	"testing"
+	"time"
 
 	"github.com/MatthewAPeters/backgammon/internal/ai"
 	"github.com/MatthewAPeters/backgammon/internal/game"
@@ -61,5 +62,25 @@ func TestAIAnimationReachesResult(t *testing.T) {
 	}
 	if m.board != play.Result || m.phase != phaseHumanRoll {
 		t.Fatalf("board/phase after animation: phase=%v", m.phase)
+	}
+}
+
+func TestRollAnimationBlocksKeysThenStartsTurn(t *testing.T) {
+	m := New(ai.NewClient("http://127.0.0.1:0", "x"))
+	m.persona = ai.Personas[0]
+	m.board = game.NewBoard()
+	m.phase = phaseHumanRoll
+	m = key(m, " ")
+	if !m.roll.active || m.phase != phaseHumanRoll {
+		t.Fatalf("active %v phase %v, want rolling before the turn starts", m.roll.active, m.phase)
+	}
+	if m = key(m, " "); m.phase != phaseHumanRoll {
+		t.Fatalf("key during roll changed phase to %v", m.phase)
+	}
+	m.roll.ends = [2]time.Time{} // let both dice land
+	next, _ := m.tickRoll(m.roll.id)
+	m = next.(Model)
+	if m.roll.active || m.phase != phaseHumanMove || len(m.plays) == 0 {
+		t.Fatalf("active %v phase %v plays %d, want human move after roll", m.roll.active, m.phase, len(m.plays))
 	}
 }

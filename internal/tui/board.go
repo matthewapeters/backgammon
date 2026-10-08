@@ -29,16 +29,18 @@ var (
 	pointLight = lipgloss.Color("#f8f3e7")
 	pointDark  = lipgloss.Color("#8b5530")
 
-	humanCol  = lipgloss.Color("#d32f2f")
-	aiCol     = lipgloss.Color("#151515")
-	countFg   = lipgloss.Color("#ffffff")
-	diceFace  = lipgloss.Color("#fbf8f0")
-	diceUsed  = lipgloss.Color("#9c8a6e")
-	diceInk   = lipgloss.Color("#151515")
-	cursorCol = lipgloss.Color("#f4b400")
-	selectCol = lipgloss.Color("#2e7d32")
-	destCol   = lipgloss.Color("#7cc47f")
-	aiMoveCol = lipgloss.Color("#7d8fc4")
+	humanCol = lipgloss.Color("#d32f2f")
+	aiCol    = lipgloss.Color("#151515")
+	countFg  = lipgloss.Color("#ffffff")
+	diceInk  = lipgloss.Color("#151515")
+	// Dice match the roller's checkers; used dice are a faded shade.
+	humanDiceUsed = lipgloss.Color("#8f5a4a")
+	aiDiceUsed    = lipgloss.Color("#6e6253")
+	diceUsedInk   = lipgloss.Color("#d8cbb5")
+	cursorCol     = lipgloss.Color("#f4b400")
+	selectCol     = lipgloss.Color("#2e7d32")
+	destCol       = lipgloss.Color("#7cc47f")
+	aiMoveCol     = lipgloss.Color("#7d8fc4")
 )
 
 // mark is how a position is highlighted.
@@ -343,8 +345,8 @@ func (m Model) renderDice() string {
 	if m.dice[0] == 0 {
 		return ""
 	}
-	dice := []int{m.dice[0], m.dice[1]}
-	if m.dice.IsDouble() {
+	dice := []int{m.dieFace(0), m.dieFace(1)}
+	if m.dice.IsDouble() && !m.roll.active {
 		dice = []int{m.dice[0], m.dice[0], m.dice[0], m.dice[0]}
 	}
 	used := make([]bool, len(dice))
@@ -358,14 +360,18 @@ func (m Model) renderDice() string {
 			}
 		}
 	}
+	face, faceUsed := humanCol, humanDiceUsed
+	if m.phase == phaseAIThinking || m.phase == phaseAIMoving {
+		face, faceUsed = aiCol, aiDiceUsed
+	}
 	gap := lipgloss.NewStyle().Background(felt).Render(" ")
 	var parts []string
 	for i, d := range dice {
-		face := diceFace
+		s := lipgloss.NewStyle().Bold(true).Foreground(countFg).Background(face)
 		if used[i] {
-			face = diceUsed
+			s = s.Foreground(diceUsedInk).Background(faceUsed)
 		}
-		parts = append(parts, lipgloss.NewStyle().Bold(true).Foreground(diceInk).Background(face).Render(fmt.Sprintf(" %d ", d)))
+		parts = append(parts, s.Render(fmt.Sprintf(" %d ", d)))
 	}
 	return strings.Join(parts, gap)
 }
