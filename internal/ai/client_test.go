@@ -99,3 +99,25 @@ func TestExtractJSON(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestGeneratePersona(t *testing.T) {
+	srv := fakeServer(t, http.StatusOK, `{"name": "  Grumpy   Cat ", "tagline": "Unimpressed.",
+		"voice": "You are Grumpy Cat.", "fallback": ["No.", " ", "Ugh."], "win": ["Fine."], "lose": ["Whatever."]}`)
+	p, err := NewClient(srv.URL, "").GeneratePersona(context.Background(), "grumpy cat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Name != "Grumpy Cat" || p.Voice != "You are Grumpy Cat." || p.Prompt != "grumpy cat" {
+		t.Fatalf("got %+v", p)
+	}
+	if len(p.Fallback) != 2 || p.Win[0] != "Fine." || p.Lose[0] != "Whatever." {
+		t.Fatalf("lines not cleaned: %+v", p)
+	}
+}
+
+func TestGeneratePersonaRejectsMissingVoice(t *testing.T) {
+	srv := fakeServer(t, http.StatusOK, `{"name": "Cat", "voice": " "}`)
+	if _, err := NewClient(srv.URL, "").GeneratePersona(context.Background(), "cat"); err == nil {
+		t.Fatal("expected an error")
+	}
+}

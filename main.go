@@ -17,6 +17,7 @@ import (
 func main() {
 	url := flag.String("llm-url", envOr("BACKGAMMON_LLM_URL", "http://localhost:8888"), "llama.cpp server base URL")
 	model := flag.String("model", os.Getenv("BACKGAMMON_MODEL"), "model name (default: first model the server lists)")
+	personas := flag.String("personas", envOr("BACKGAMMON_PERSONAS", defaultPersonaPath()), "file holding the opponents you create")
 	color := flag.String("color", envOr("BACKGAMMON_COLOR", "truecolor"), "color mode: truecolor, 256, 16, or auto (trust $TERM/$COLORTERM)")
 	flag.Parse()
 
@@ -36,10 +37,23 @@ func main() {
 	}
 
 	client := ai.NewClient(*url, *model)
-	if _, err := tea.NewProgram(tui.New(client), tea.WithAltScreen()).Run(); err != nil {
+	var store *ai.PersonaStore
+	if *personas != "" {
+		store = &ai.PersonaStore{Path: *personas}
+	}
+	if _, err := tea.NewProgram(tui.New(client, store), tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+// defaultPersonaPath is "" (custom opponents not saved) if there is no config directory.
+func defaultPersonaPath() string {
+	p, err := ai.DefaultPersonaPath()
+	if err != nil {
+		return ""
+	}
+	return p
 }
 
 func envOr(key, def string) string {

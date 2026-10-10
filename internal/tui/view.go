@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -26,8 +27,11 @@ var (
 )
 
 func (m Model) View() string {
-	if m.phase == phasePersona {
+	switch m.phase {
+	case phasePersona:
 		return m.viewPersona()
+	case phaseNewPersona, phaseGenerating:
+		return m.viewNewPersona()
 	}
 	board := m.renderBoard()
 	var main string
@@ -47,21 +51,47 @@ func (m Model) viewPersona() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("♦ B A C K G A M M O N ♦") + "\n")
 	b.WriteString(dimStyle.Render("Choose your opponent") + "\n\n")
-	for i, p := range ai.Personas {
+	for i, p := range slices.Concat(m.roster, []ai.Persona{{Name: "+ New opponent…", Tagline: "Name anyone; the AI writes the character"}}) {
 		cursor := "  "
 		name := p.Name
 		if i == m.pick {
 			cursor = titleStyle.Render("▸ ")
 			name = personaStyle.Render(name)
 		}
-		fmt.Fprintf(&b, "%s%d. %s\n     %s\n", cursor, i+1, name, italicDim.Render(p.Tagline))
+		num := fmt.Sprintf("%d.", i+1)
+		if i == len(m.roster) {
+			num = "  "
+		}
+		fmt.Fprintf(&b, "%s%s %s\n     %s\n", cursor, num, name, italicDim.Render(p.Tagline))
+	}
+	if m.menuNote != "" {
+		b.WriteString("\n" + statusStyle.Render(m.menuNote) + "\n")
 	}
 	model := m.client.Model
 	if model == "" {
 		model = "auto"
 	}
 	fmt.Fprintf(&b, "\n%s\n", dimStyle.Render(fmt.Sprintf("llama.cpp: %s  model: %s", m.client.BaseURL, model)))
-	b.WriteString(dimStyle.Render("↑/↓ choose · enter play · q quit"))
+	b.WriteString(dimStyle.Render("↑/↓ choose · enter play · n new opponent · q quit"))
+	return lipgloss.NewStyle().Padding(1, 2).Render(b.String())
+}
+
+func (m Model) viewNewPersona() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("♦ B A C K G A M M O N ♦") + "\n")
+	b.WriteString(dimStyle.Render("Who do you want to play against?") + "\n")
+	b.WriteString(italicDim.Render("A name is enough. Add as much description as you like.") + "\n\n")
+	b.WriteString(m.input.View() + "\n\n")
+	switch {
+	case m.phase == phaseGenerating:
+		b.WriteString(m.spinner.View() + dimStyle.Render(" Writing the character…") + "\n\n")
+		b.WriteString(dimStyle.Render("esc back · q quit"))
+	default:
+		if m.menuNote != "" {
+			b.WriteString(statusStyle.Render(m.menuNote) + "\n\n")
+		}
+		b.WriteString(dimStyle.Render("enter create · esc back"))
+	}
 	return lipgloss.NewStyle().Padding(1, 2).Render(b.String())
 }
 
@@ -104,6 +134,9 @@ func (m Model) renderPanel() string {
 // shortName is the persona name without a leading adjective, for tight spots.
 func shortName(p ai.Persona) string {
 	f := strings.Fields(p.Name)
+	if len(f) == 0 {
+		return "Opponent"
+	}
 	return f[len(f)-1]
 }
 

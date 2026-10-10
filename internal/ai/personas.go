@@ -4,18 +4,22 @@
 package ai
 
 // Persona is a character the AI opponent plays.
+// Custom personas are stored as JSON, so the field names are part of the file format.
 type Persona struct {
-	Name    string
-	Tagline string
+	Name    string `json:"name"`
+	Tagline string `json:"tagline"`
 	// Voice describes how the character talks; it is woven into the system prompt.
-	Voice string
+	Voice string `json:"voice"`
 	// Fallback lines are used when the LLM is unreachable or misbehaves.
-	Fallback []string
+	Fallback []string `json:"fallback"`
 	// Win and Lose lines are fallbacks for the end-of-game reaction.
-	Win, Lose []string
+	Win  []string `json:"win"`
+	Lose []string `json:"lose"`
+	// Prompt is what the player typed to create a custom persona.
+	Prompt string `json:"prompt,omitempty"`
 }
 
-// Personas is the roster offered at the start of a game.
+// Personas is the built-in roster offered at the start of a game.
 var Personas = []Persona{
 	{
 		Name:    "Dutiful Underling",

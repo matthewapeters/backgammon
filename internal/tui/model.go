@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/MatthewAPeters/backgammon/internal/ai"
@@ -18,7 +20,9 @@ import (
 type phase int
 
 const (
-	phasePersona phase = iota
+	phasePersona    phase = iota
+	phaseNewPersona       // typing a description of a new opponent
+	phaseGenerating       // waiting for the LLM to write the new opponent
 	phaseOpening
 	phaseHumanRoll
 	phaseHumanMove
@@ -45,7 +49,14 @@ type logEntry struct {
 type Model struct {
 	client  *ai.Client
 	persona ai.Persona
-	pick    int // persona menu cursor
+	pick    int // persona menu cursor; len(roster) is "new opponent"
+
+	// roster is the built-in personas followed by the player's own.
+	roster   []ai.Persona
+	store    *ai.PersonaStore // nil means custom personas are not saved
+	input    textinput.Model  // new persona description
+	genID    int              // ignores results from an abandoned generation
+	menuNote string           // message shown on the persona screens
 
 	phase phase
 	board game.Board
@@ -85,10 +96,24 @@ type Model struct {
 	width     int
 }
 
-// New returns the initial model.
-func New(client *ai.Client) Model {
+// New returns the initial model. Custom personas are loaded from store,
+// which may be nil to offer only the built-in roster without saving new ones.
+func New(client *ai.Client, store *ai.PersonaStore) Model {
 	sp := spinner.New(spinner.WithSpinner(spinner.Dot))
-	return Model{client: client, spinner: sp, selected: -1, aiLast: [2]int{-1, -1}}
+	in := textinput.New()
+	in.Placeholder = "e.g. Grumpy Cat, or a retired chess champion who thinks dice are beneath her"
+	in.CharLimit = 300
+	in.Width = 60
+	m := Model{client: client, spinner: sp, selected: -1, aiLast: [2]int{-1, -1},
+		roster: slices.Clone(ai.Personas), store: store, input: in}
+	if store != nil {
+		custom, err := store.Load()
+		if err != nil {
+			m.menuNote = "Couldn't load your opponents: " + shortErr(err)
+		}
+		m.roster = append(m.roster, custom...)
+	}
+	return m
 }
 
 // Messages.
@@ -98,6 +123,11 @@ type (
 	rollTickMsg   struct{ id int }
 	reactionMsg   struct{ text string }
 	warmupMsg     struct{ err error }
+	personaMsg    struct {
+		id  int
+		p   ai.Persona
+		err error
+	}
 )
 
 func (m Model) Init() tea.Cmd { return nil }
@@ -108,6 +138,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
+		if m.phase == phaseNewPersona {
+			return m.keyNewPersona(msg)
+		}
 		return m.handleKey(msg.String())
 
 	case tea.WindowSizeMsg:
@@ -115,7 +148,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if m.phase != phaseAIThinking {
+		if m.phase != phaseAIThinking && m.phase != phaseGenerating {
 			return m, nil
 		}
 		var cmd tea.Cmd
@@ -143,6 +176,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case aiStepMsg:
 		return m.stepAI()
 
+	case personaMsg:
+		return m.personaCreated(msg)
+
 	case reactionMsg:
 		m.say(m.persona.Name, msg.text)
 		return m, nil
@@ -160,6 +196,13 @@ func (m Model) handleKey(k string) (tea.Model, tea.Cmd) {
 	switch m.phase {
 	case phasePersona:
 		return m.keyPersona(k)
+	case phaseGenerating:
+		if k == "esc" {
+			m.genID++
+			m.phase = phaseNewPersona
+			m.menuNote = ""
+			return m, m.input.Focus()
+		}
 	case phaseOpening:
 		if isConfirm(k) {
 			return m.finishOpening()
@@ -184,7 +227,7 @@ func (m Model) handleKey(k string) (tea.Model, tea.Cmd) {
 func isConfirm(k string) bool { return k == "enter" || k == " " || k == "space" }
 
 func (m Model) keyPersona(k string) (tea.Model, tea.Cmd) {
-	n := len(ai.Personas)
+	n := len(m.roster) + 1 // the last entry creates a new opponent
 	switch k {
 	case "up", "k", "shift+tab":
 		m.pick = (m.pick + n - 1) % n
@@ -194,8 +237,14 @@ func (m Model) keyPersona(k string) (tea.Model, tea.Cmd) {
 		if i := int(k[0] - '1'); i < n {
 			m.pick = i
 		}
+	case "n", "+":
+		return m.startNewPersona()
 	case "enter", " ", "space":
-		m.persona = ai.Personas[m.pick]
+		if m.pick == len(m.roster) {
+			return m.startNewPersona()
+		}
+		m.menuNote = ""
+		m.persona = m.roster[m.pick]
 		m.score = [2]int{}
 		m.log = nil
 		m.say("", fmt.Sprintf("You sit down across from the %s.", m.persona.Name))
@@ -210,6 +259,67 @@ func (m Model) keyPersona(k string) (tea.Model, tea.Cmd) {
 		}
 		next, cmd := m.newGame()
 		return next, tea.Batch(cmd, warm)
+	}
+	return m, nil
+}
+
+func (m Model) startNewPersona() (tea.Model, tea.Cmd) {
+	m.pick = len(m.roster)
+	m.phase = phaseNewPersona
+	m.menuNote = ""
+	m.input.Reset()
+	return m, m.input.Focus()
+}
+
+func (m Model) keyNewPersona(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.input.Blur()
+		m.phase = phasePersona
+		m.menuNote = ""
+		return m, nil
+	case "enter":
+		desc := strings.TrimSpace(m.input.Value())
+		if desc == "" {
+			return m, nil
+		}
+		m.input.Blur()
+		m.phase = phaseGenerating
+		m.menuNote = ""
+		m.genID++
+		client, id := m.client, m.genID
+		gen := func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			defer cancel()
+			p, err := client.GeneratePersona(ctx, desc)
+			return personaMsg{id, p, err}
+		}
+		return m, tea.Batch(gen, m.spinner.Tick)
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+// personaCreated adds a freshly generated persona to the roster and saves it.
+func (m Model) personaCreated(msg personaMsg) (tea.Model, tea.Cmd) {
+	if msg.id != m.genID || m.phase != phaseGenerating {
+		return m, nil
+	}
+	if msg.err != nil {
+		// Back to the prompt with the text intact so the player can retry.
+		m.phase = phaseNewPersona
+		m.menuNote = "Couldn't create that opponent: " + shortErr(msg.err)
+		return m, m.input.Focus()
+	}
+	m.roster = append(m.roster, msg.p)
+	m.pick = len(m.roster) - 1
+	m.phase = phasePersona
+	m.menuNote = "New opponent: " + msg.p.Name
+	if m.store != nil {
+		if err := m.store.Add(msg.p); err != nil {
+			m.menuNote = "New opponent for this session only; couldn't save: " + shortErr(err)
+		}
 	}
 	return m, nil
 }

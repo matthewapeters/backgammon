@@ -81,6 +81,11 @@ var thinkRE = regexp.MustCompile(`(?s)<think>.*?</think>`)
 
 // chat sends one system+user exchange and returns the assistant's text.
 func (c *Client) chat(ctx context.Context, system, user string, schema map[string]any) (string, error) {
+	return c.chatN(ctx, system, user, schema, 200)
+}
+
+// chatN is chat with a reply length limit of maxTokens.
+func (c *Client) chatN(ctx context.Context, system, user string, schema map[string]any, maxTokens int) (string, error) {
 	model, err := c.ResolveModel(ctx)
 	if err != nil {
 		return "", err
@@ -91,7 +96,7 @@ func (c *Client) chat(ctx context.Context, system, user string, schema map[strin
 			{Role: "system", Content: system},
 			{Role: "user", Content: user},
 		},
-		MaxTokens:   200,
+		MaxTokens:   maxTokens,
 		Temperature: 0.8,
 		// Reasoning models are far too slow per move with thinking on.
 		ChatTemplateKwargs: map[string]any{"enable_thinking": false},
@@ -233,6 +238,73 @@ func (c *Client) pickWithLLM(ctx context.Context, p Persona, b game.Board, d gam
 func (c *Client) React(ctx context.Context, p Persona, situation string) (string, error) {
 	system := p.Voice + "\n\nReply with one or two short sentences, fully in character. No quotation marks."
 	return c.chat(ctx, system, situation, nil)
+}
+
+// GeneratePersona has the LLM write a new opponent from the player's
+// description, which may be just a name or a paragraph about the character.
+func (c *Client) GeneratePersona(ctx context.Context, description string) (Persona, error) {
+	example, err := json.Marshal(Personas[3])
+	if err != nil {
+		return Persona{}, err
+	}
+	system := "You create opponent characters for a backgammon game. The player describes a character; " +
+		"it may be just a name or a longer description. Invent a vivid, playful character that fits it.\n" +
+		"- name: a short display name, 1-4 words in Title Case. If the player gave a name, use it.\n" +
+		"- tagline: one witty line, under 60 characters.\n" +
+		"- voice: 2-4 sentences in the second person (\"You are ...\") saying who the character is and how " +
+		"they talk while playing backgammon: attitude, vocabulary, catchphrases. These become the " +
+		"character's instructions.\n" +
+		"- fallback: three short in-character lines to say after making a move.\n" +
+		"- win: one line for winning the game. lose: one line for losing it.\n" +
+		"Keep it fun and PG-13: no slurs, hate or sexual content.\n\n" +
+		"Example:\n" + string(example)
+
+	str := func(n int) map[string]any { return map[string]any{"type": "string", "minLength": 1, "maxLength": n} }
+	lines := func(n int) map[string]any {
+		return map[string]any{"type": "array", "items": str(150), "minItems": n, "maxItems": n}
+	}
+	// A struct keeps the properties in a natural writing order.
+	type properties struct {
+		Name     any `json:"name"`
+		Tagline  any `json:"tagline"`
+		Voice    any `json:"voice"`
+		Fallback any `json:"fallback"`
+		Win      any `json:"win"`
+		Lose     any `json:"lose"`
+	}
+	schema := map[string]any{
+		"type":       "object",
+		"properties": properties{str(40), str(80), str(700), lines(3), lines(1), lines(1)},
+		"required":   []string{"name", "tagline", "voice", "fallback", "win", "lose"},
+	}
+
+	text, err := c.chatN(ctx, system, "Character: "+description, schema, 800)
+	if err != nil {
+		return Persona{}, err
+	}
+	var p Persona
+	if err := json.Unmarshal([]byte(extractJSON(text)), &p); err != nil {
+		return Persona{}, fmt.Errorf("unparseable persona %q: %w", text, err)
+	}
+	p.Name = strings.Join(strings.Fields(p.Name), " ")
+	p.Tagline = strings.TrimSpace(p.Tagline)
+	p.Voice = strings.TrimSpace(p.Voice)
+	p.Fallback, p.Win, p.Lose = cleanLines(p.Fallback), cleanLines(p.Win), cleanLines(p.Lose)
+	p.Prompt = description
+	if p.Name == "" || p.Voice == "" {
+		return Persona{}, fmt.Errorf("persona is missing a name or voice: %q", text)
+	}
+	return p, nil
+}
+
+func cleanLines(in []string) []string {
+	var out []string
+	for _, s := range in {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // Warmup asks the server to load the model so the first real move is fast.

@@ -2,7 +2,7 @@
 
 A terminal backgammon game (Go + [Bubble Tea](https://github.com/charmbracelet/bubbletea))
 played against a local LLM served by [llama.cpp](https://github.com/ggml-org/llama.cpp),
-in one of six personas.
+in one of six personas, or any opponent you make up.
 
 ![a screenshot](screenshot.png)
 
@@ -34,6 +34,34 @@ Colors default to 24-bit (`--color truecolor`), because many terminals that supp
 still report `TERM=xterm`, which would otherwise drop the palette to 16 colors. Use
 `--color auto`, `256` or `16` if your terminal shows garbled colors.
 
+## Your own opponents
+
+Choose **+ New opponent…** (or press `n`) on the opponent screen and describe who you
+want to play. A name like "Grumpy Cat" is enough, and you can add as much detail as you
+like. The LLM writes the full character: a display name, a tagline, the voice used as
+its instructions, and canned lines for when the LLM is unavailable. New opponents are
+saved to `~/.config/backgammon/personas.json`, which is created if it's missing. Edit
+that file to tweak a character. Use `--personas <file>` or `BACKGAMMON_PERSONAS` to
+choose a different file. The six built-in personas live in the code and are never
+written to the file.
+
+```json
+{
+  "version": 1,
+  "personas": [
+    {
+      "name": "Grumpy Cat",
+      "tagline": "Judges your dice rolls with silent contempt.",
+      "voice": "You are a perpetually unimpressed feline ...",
+      "fallback": ["Meh.", "I expected better.", "Do not touch my fur."],
+      "win": ["I was always going to win. It is disappointing how obvious it was."],
+      "lose": ["The dice were defective. Clearly."],
+      "prompt": "Grumpy Cat"
+    }
+  ]
+}
+```
+
 ## Controls
 
 | Key | Action |
@@ -43,6 +71,7 @@ still report `TERM=xterm`, which would otherwise drop the palette to 16 colors. 
 | enter | select checker / make move / finish turn |
 | esc | cancel selection |
 | u | undo a move this turn |
+| n | new opponent (on the opponent screen) |
 | n / p | new game / change opponent (after a game) |
 | q | quit |
 
