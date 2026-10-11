@@ -1,0 +1,297 @@
+package tui
+
+import (
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+// aboutSection is one tab of the about page. Text is in a tiny markup:
+// paragraphs separated by blank lines, "# " headings, "- " bullets (one per
+// line), *bold* and `code`.
+type aboutSection struct{ title, text string }
+
+var aboutSections = []aboutSection{
+	{"History", `# Five thousand years of racing games
+
+Backgammon belongs to the oldest family of board games there is: race games, where dice decide how far your pieces run and the skill lies in choosing which pieces to move. The Royal Game of Ur, played in Mesopotamia around 2600 BCE, and Egypt's Senet are early relatives.
+
+The Romans played *Tabula* on a board of 24 points with 15 pieces a side, which is essentially the modern game. A position from a game played by the emperor Zeno around 480 CE, in which a single unlucky roll wrecked his board, was recorded by the historian Agathias. It is often called the first written backgammon problem.
+
+In Persia the game is *Nard*. Legend credits the sage Bozorgmehr with inventing it to answer a challenge posed by chess, which had just arrived from India: chess was a game of pure reason, nard a game of reason under fate.
+
+Medieval Europe knew the game simply as *tables*. The name *backgammon* appears in English in the 1600s, probably from "back game", because checkers that get hit have to go back and start again. Edmond Hoyle published rules and strategy for it in 1743.
+
+# The modern game
+
+The *doubling cube* was invented in New York clubs in the 1920s and turned backgammon into a serious gambling game. A boom followed in the 1960s and 70s, when tournaments became glamorous social events; the World Championship has been held in Monte Carlo since 1979.
+
+Computers changed the game in the 1990s. Gerald Tesauro's *TD-Gammon* at IBM taught itself by playing millions of games against itself, and reached the level of the best humans. It overturned long-held opening theory, and its successors, such as GNU Backgammon and eXtreme Gammon, are now how players study.
+
+This game has no doubling cube: each game is worth 1, 2 or 3 points depending on how it ends.`},
+
+	{"Terms", `# The board
+
+- *Point*: one of the 24 triangles. You move from your 24-point down to your 1-point.
+- *Home board*: your points 1 to 6. All 15 of your checkers must be there before you can bear off.
+- *Outer board*: points 7 to 12. The *bar point* is your 7-point, next to the bar.
+- *Bar*: the strip down the middle, where hit checkers wait.
+- *Pip*: one point of movement. Your *pip count* is the total distance all your checkers still have to travel; the side panel shows both counts, and the lower one is ahead in the race.
+
+# Moving
+
+- *Opening roll*: each side rolls one die. The higher die goes first and plays both dice.
+- *Doubles*: rolling two of the same number lets you move that number four times.
+- You must use both dice if you can. If only one can be played, you must play the larger if possible.
+- *Blot*: a single checker alone on a point. It can be hit.
+- *Hit*: landing on an opponent's blot sends it to the bar.
+- *Entering*: a checker on the bar must come back in, in the opponent's home board, before you move anything else.
+- *Made point*: two or more of your checkers on a point. The opponent can't land there.
+- *Anchor*: a point you have made in your opponent's home board, a safe landing spot.
+- *Prime*: several made points in a row. Six in a row is a full prime, and nothing can get past it.
+- *Builder*: a checker placed where it can help make a new point next turn.
+- *Slot*: deliberately leaving a blot on a point you want to make, hoping to cover it next turn.
+
+# Winning
+
+- *Bearing off*: once all your checkers are home, you remove them from the board. First to bear off all 15 wins.
+- *Single game*: the loser has borne off at least one checker. Worth 1 point.
+- *Gammon*: the loser has borne off nothing. Worth 2.
+- *Backgammon*: a gammon where the loser also still has a checker on the bar or in the winner's home board. Worth 3.`},
+
+	{"Engine", `# The rules engine
+
+The game's rules live in ` + "`internal/game`" + `. For every roll it generates every legal play: each order of the dice, and for doubles all four moves. It keeps only the plays that use as many dice as possible, applies the "play the larger die" rule, and collapses plays that reach the same position by different routes.
+
+# The heuristic
+
+Each resulting position gets a score from a hand-tuned evaluation function. It is quick and opinionated rather than strong. From the mover's point of view it adds up:
+
+- *The race*: the difference in pip counts.
+- *Progress*: checkers already borne off, and opponent checkers stuck on the bar.
+- *Made points*: the 5- and 4-points count most, then the rest of the home board and the bar point, then any other point.
+- *Primes*: a bonus for three or more made points in a row.
+- *Stacking*: a small penalty for piling more than three checkers on one point.
+- *Blots*: for each blot that can still be hit, the chance it gets hit (counting which of the 36 possible rolls would do it) times how much ground it would lose.
+
+Plays are ranked by that score. The top-ranked play is the engine's choice.
+
+# Grading your moves
+
+When you finish a turn, the engine ranks your play against every alternative and grades it by how far it fell short of its favorite: *forced*, *best*, *solid*, *questionable* or *blunder*. It also notes what the play did, such as hitting, making a point, leaving blots or bearing off. Your opponent hears about that grade, which is where its taunts and compliments come from.
+
+The heuristic is far from perfect. It will sometimes call a good move a blunder, much like a human opponent who is sure of themselves.`},
+
+	{"The AI", `# Who decides what
+
+Your opponent is two things working together: the rules engine, which knows backgammon, and a language model running locally under llama.cpp, which plays the character.
+
+The model never invents moves. Each turn, the engine works out the legal plays and ranks them, and the model receives:
+
+- the board described from its own point of view,
+- the engine's grade of your last play,
+- its roll, and the engine's top 10 plays as numbered options, with notes such as "hits 1" or "leaves 2 blots".
+
+It replies in character with a reaction to your move, the number of the play it chooses, and a comment on its own move. The reply is constrained by a JSON schema, so it always comes back in a form the game can read.
+
+The model is asked to choose the best play, but it has opinions. A trash-talking sailor may well prefer the option that hits, and that is part of the fun.
+
+# When the model isn't there
+
+If the llama.cpp server is unreachable, slow, or replies with something unusable, the engine plays its top-ranked play and the persona says one of its canned lines. The game never waits on the model, and it is fully playable offline. The side panel shows the model's status.
+
+At the end of a game the model writes a win or loss reaction, with canned lines as a fallback.
+
+# Your games
+
+Every game is saved as you play, to ` + "`~/.config/backgammon/history.json`" + `: the opening roll, every turn's dice and moves, and everything said. Dice are saved as soon as they are rolled, so quitting and coming back can't change your luck. Choose *Resume* on the main menu to pick up your last unfinished game. Use ` + "`--history <file>`" + ` or ` + "`BACKGAMMON_HISTORY`" + ` to keep it somewhere else.`},
+
+	{"Personas", `# Making your own opponent
+
+Choose *Choose opponent* on the main menu, then *+ New opponent…* (or press ` + "`n`" + `). Describe who you want to play against. A name like "Grumpy Cat" is enough, and you can add as much detail as you like.
+
+The model then writes the whole character:
+
+- *name* and *tagline*, shown on the menus,
+- *voice*: two to four sentences saying who the character is and how they talk. This becomes the model's instructions every turn, so it shapes everything the character says,
+- *fallback*: three lines for when the model is unavailable,
+- *win* and *lose*: canned reactions to the end of a game.
+
+# Editing by hand
+
+New opponents are saved to ` + "`~/.config/backgammon/personas.json`" + `. Edit the file to tweak a character, or add one entirely by hand; the game reads it at startup. Use ` + "`--personas <file>`" + ` or ` + "`BACKGAMMON_PERSONAS`" + ` to use a different file.
+
+Tips for a good voice:
+
+- Write it in the second person: "You are a retired chess champion who…"
+- Say how they talk: vocabulary, catchphrases, attitude to winning and losing.
+- Keep it short. A few vivid sentences work better than a page.
+
+The six built-in personas live in the code and are never written to the file. The opponent you played last is the one waiting for you on the main menu.`},
+}
+
+// aboutTextW is the width of the about page's text.
+const aboutTextW = innerW - 12
+
+// aboutHeight is how many lines of text the about page shows at once.
+func (m Model) aboutHeight() int {
+	if m.height <= 0 {
+		return 20
+	}
+	return min(max(m.height-10, 6), 40)
+}
+
+func (m Model) keyAbout(k string) (tea.Model, tea.Cmd) {
+	n := len(aboutSections)
+	h := m.aboutHeight()
+	maxScroll := max(0, len(aboutLines(aboutSections[m.about.tab].text, aboutTextW))-h)
+	switch k {
+	case "esc", "m", "backspace":
+		return m.toMenu(), nil
+	case "right", "l", "tab":
+		m.about.tab, m.about.scroll = (m.about.tab+1)%n, 0
+	case "left", "h", "shift+tab":
+		m.about.tab, m.about.scroll = (m.about.tab+n-1)%n, 0
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		if i := int(k[0] - '1'); i < n {
+			m.about.tab, m.about.scroll = i, 0
+		}
+	case "down", "j":
+		m.about.scroll++
+	case "up", "k":
+		m.about.scroll--
+	case "pgdown", " ", "space", "f":
+		m.about.scroll += h - 1
+	case "pgup", "b":
+		m.about.scroll -= h - 1
+	case "home", "g":
+		m.about.scroll = 0
+	case "end", "G":
+		m.about.scroll = maxScroll
+	}
+	m.about.scroll = min(max(m.about.scroll, 0), maxScroll)
+	return m, nil
+}
+
+func (m Model) viewAbout() string {
+	var tabs []string
+	for i, s := range aboutSections {
+		if i == m.about.tab {
+			tabs = append(tabs, chipStyle.Render(" "+s.title+" "))
+		} else {
+			tabs = append(tabs, inkStyle.Render(" "+s.title+" "))
+		}
+	}
+	lines := aboutLines(aboutSections[m.about.tab].text, aboutTextW)
+	h := m.aboutHeight()
+	first := min(m.about.scroll, max(0, len(lines)-h))
+
+	ls := []string{feltBlank(), feltCenter(strings.Join(tabs, feltBg.Render("  "))), feltBlank()}
+	for i := first; i < first+h; i++ {
+		if i < len(lines) {
+			ls = append(ls, feltLeft(lines[i], 6))
+		} else {
+			ls = append(ls, feltBlank())
+		}
+	}
+	more := ""
+	switch {
+	case first > 0 && first+h < len(lines):
+		more = "▲ ▼ more"
+	case first > 0:
+		more = "▲ more"
+	case first+h < len(lines):
+		more = "▼ more"
+	}
+	ls = append(ls, feltCenter(inkDim.Render(more)))
+	return m.place(lipgloss.JoinVertical(lipgloss.Left,
+		inlay(ls),
+		footer("←/→ section · ↑/↓ scroll · space page · esc menu"),
+	))
+}
+
+// aboutLines renders section text wrapped to width w, styled for the felt.
+func aboutLines(text string, w int) []string {
+	var out []string
+	for i, para := range strings.Split(strings.TrimSpace(text), "\n\n") {
+		if i > 0 {
+			out = append(out, "")
+		}
+		switch {
+		case strings.HasPrefix(para, "# "):
+			out = append(out, onFelt(pointDark).Render("◆ ")+inkBold.Render(strings.ToUpper(para[2:])))
+		case strings.HasPrefix(para, "- "):
+			for _, item := range strings.Split(para, "\n") {
+				for j, l := range styleWrapped(strings.TrimPrefix(item, "- "), w-2) {
+					lead := onFelt(pointDark).Render("• ")
+					if j > 0 {
+						lead = feltBg.Render("  ")
+					}
+					out = append(out, lead+l)
+				}
+			}
+		default:
+			out = append(out, styleWrapped(para, w)...)
+		}
+	}
+	return out
+}
+
+// styleWrapped word-wraps markup text to w visible cells and styles each line.
+func styleWrapped(text string, w int) []string {
+	visible := func(s string) int { return lipgloss.Width(strings.NewReplacer("*", "", "`", "").Replace(s)) }
+	var raw []string
+	line := ""
+	for _, word := range strings.Fields(text) {
+		switch {
+		case line == "":
+			line = word
+		case visible(line)+1+visible(word) <= w:
+			line += " " + word
+		default:
+			raw = append(raw, line)
+			line = word
+		}
+	}
+	if line != "" {
+		raw = append(raw, line)
+	}
+
+	// Bold and code spans may cross line breaks, so carry them over.
+	bold, code := false, false
+	out := make([]string, len(raw))
+	for i, l := range raw {
+		var b strings.Builder
+		run := ""
+		flush := func() {
+			if run == "" {
+				return
+			}
+			st := inkStyle
+			switch {
+			case code:
+				st = codeStyle
+			case bold:
+				st = inkBold
+			}
+			b.WriteString(st.Render(run))
+			run = ""
+		}
+		for _, r := range l {
+			switch r {
+			case '*':
+				flush()
+				bold = !bold
+			case '`':
+				flush()
+				code = !code
+			default:
+				run += string(r)
+			}
+		}
+		flush()
+		out[i] = b.String()
+	}
+	return out
+}

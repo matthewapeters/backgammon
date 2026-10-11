@@ -34,9 +34,26 @@ Colors default to 24-bit (`--color truecolor`), because many terminals that supp
 still report `TERM=xterm`, which would otherwise drop the palette to 16 colors. Use
 `--color auto`, `256` or `16` if your terminal shows garbled colors.
 
+## The main menu
+
+The game opens on a main menu with the opponent you played last. From there you can
+start a new game, resume your last unfinished game, choose another opponent, or read
+**About the game**: a short history of backgammon, the terminology, how the rules
+engine and its heuristic work, how the LLM fits in, and how to make your own opponents.
+Press `m` during a game to go back to the menu. The game is saved, so you can resume it.
+
+## Saved games
+
+Every game is saved as it is played to `~/.config/backgammon/history.json`: the
+opponent, the opening roll, each turn's dice and moves, and everything said. Dice are
+saved as soon as they are rolled, so quitting and resuming can't change a roll.
+**Resume** picks up the most recent unfinished game. Starting a new game while one is
+unfinished asks first and then marks the old one abandoned. Finished games stay in the
+file. Use `--history <file>` or `BACKGAMMON_HISTORY` to choose a different file.
+
 ## Your own opponents
 
-Choose **+ New opponent…** (or press `n`) on the opponent screen and describe who you
+Choose **Choose opponent** on the menu, then **+ New opponent…** (or press `n`) and describe who you
 want to play. A name like "Grumpy Cat" is enough, and you can add as much detail as you
 like. The LLM writes the full character: a display name, a tagline, the voice used as
 its instructions, and canned lines for when the LLM is unavailable. New opponents are
@@ -71,6 +88,8 @@ written to the file.
 | enter | select checker / make move / finish turn |
 | esc | cancel selection |
 | u | undo a move this turn |
+| m | main menu (the game is saved) |
+| n / r / o / a | new game / resume / choose opponent / about (on the menu) |
 | n | new opponent (on the opponent screen) |
 | n / p | new game / change opponent (after a game) |
 | q | quit |

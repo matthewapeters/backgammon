@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -28,6 +27,10 @@ var (
 
 func (m Model) View() string {
 	switch m.phase {
+	case phaseMenu:
+		return m.viewMenu()
+	case phaseAbout:
+		return m.viewAbout()
 	case phasePersona:
 		return m.viewPersona()
 	case phaseNewPersona, phaseGenerating:
@@ -47,54 +50,6 @@ func (m Model) View() string {
 	)
 }
 
-func (m Model) viewPersona() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("♦ B A C K G A M M O N ♦") + "\n")
-	b.WriteString(dimStyle.Render("Choose your opponent") + "\n\n")
-	for i, p := range slices.Concat(m.roster, []ai.Persona{{Name: "+ New opponent…", Tagline: "Name anyone; the AI writes the character"}}) {
-		cursor := "  "
-		name := p.Name
-		if i == m.pick {
-			cursor = titleStyle.Render("▸ ")
-			name = personaStyle.Render(name)
-		}
-		num := fmt.Sprintf("%d.", i+1)
-		if i == len(m.roster) {
-			num = "  "
-		}
-		fmt.Fprintf(&b, "%s%s %s\n     %s\n", cursor, num, name, italicDim.Render(p.Tagline))
-	}
-	if m.menuNote != "" {
-		b.WriteString("\n" + statusStyle.Render(m.menuNote) + "\n")
-	}
-	model := m.client.Model
-	if model == "" {
-		model = "auto"
-	}
-	fmt.Fprintf(&b, "\n%s\n", dimStyle.Render(fmt.Sprintf("llama.cpp: %s  model: %s", m.client.BaseURL, model)))
-	b.WriteString(dimStyle.Render("↑/↓ choose · enter play · n new opponent · q quit"))
-	return lipgloss.NewStyle().Padding(1, 2).Render(b.String())
-}
-
-func (m Model) viewNewPersona() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("♦ B A C K G A M M O N ♦") + "\n")
-	b.WriteString(dimStyle.Render("Who do you want to play against?") + "\n")
-	b.WriteString(italicDim.Render("A name is enough. Add as much description as you like.") + "\n\n")
-	b.WriteString(m.input.View() + "\n\n")
-	switch {
-	case m.phase == phaseGenerating:
-		b.WriteString(m.spinner.View() + dimStyle.Render(" Writing the character…") + "\n\n")
-		b.WriteString(dimStyle.Render("esc back · q quit"))
-	default:
-		if m.menuNote != "" {
-			b.WriteString(statusStyle.Render(m.menuNote) + "\n\n")
-		}
-		b.WriteString(dimStyle.Render("enter create · esc back"))
-	}
-	return lipgloss.NewStyle().Padding(1, 2).Render(b.String())
-}
-
 func (m Model) renderPanel() string {
 	var b strings.Builder
 	b.WriteString(personaStyle.Render(m.persona.Name) + "\n")
@@ -108,6 +63,9 @@ func (m Model) renderPanel() string {
 		llm = "idle"
 	}
 	b.WriteString(dimStyle.Render("LLM   "+llm) + "\n")
+	if m.saveNote != "" {
+		b.WriteString(dimStyle.Width(panelW-2).Render(m.saveNote) + "\n")
+	}
 	b.WriteString(dimStyle.Render(strings.Repeat("─", panelW-2)) + "\n")
 
 	var logText []string
@@ -154,16 +112,16 @@ func (m Model) helpLine() string {
 	switch m.phase {
 	case phaseHumanMove:
 		if m.turnDone() {
-			return "enter finish turn · u undo · q quit"
+			return "enter finish turn · u undo · m menu · q quit"
 		}
 		if m.selected >= 0 {
-			return "←/→ choose destination · enter move · esc cancel · u undo · q quit"
+			return "←/→ choose destination · enter move · esc cancel · u undo · m menu · q quit"
 		}
-		return "←/→ choose checker · enter select · u undo · q quit"
+		return "←/→ choose checker · enter select · u undo · m menu · q quit"
 	case phaseHumanRoll, phaseOpening:
-		return "space roll/continue · q quit"
+		return "space roll/continue · m menu · q quit"
 	case phaseGameOver:
-		return "n new game · p change opponent · q quit"
+		return "n new game · p change opponent · m menu · q quit"
 	}
 	return "q quit"
 }

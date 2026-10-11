@@ -18,7 +18,7 @@ func key(m Model, k string) Model {
 }
 
 func TestHumanBearsOffLastCheckerAndWins(t *testing.T) {
-	m := New(ai.NewClient("http://127.0.0.1:0", "x"), nil)
+	m := New(ai.NewClient("http://127.0.0.1:0", "x"), nil, nil)
 	m.persona = ai.Personas[0]
 	m.board = game.Board{}
 	m.board.C[game.Human][1] = 1
@@ -37,7 +37,7 @@ func TestHumanBearsOffLastCheckerAndWins(t *testing.T) {
 }
 
 func TestUndoRestoresBoard(t *testing.T) {
-	m := New(ai.NewClient("http://127.0.0.1:0", "x"), nil)
+	m := New(ai.NewClient("http://127.0.0.1:0", "x"), nil, nil)
 	m.board = game.NewBoard()
 	m.startHumanTurn(game.Dice{6, 1})
 	start := m.board
@@ -53,7 +53,7 @@ func TestUndoRestoresBoard(t *testing.T) {
 }
 
 func TestAIAnimationReachesResult(t *testing.T) {
-	m := New(ai.NewClient("http://127.0.0.1:0", "x"), nil)
+	m := New(ai.NewClient("http://127.0.0.1:0", "x"), nil, nil)
 	m.persona = ai.Personas[1]
 	m.board = game.NewBoard()
 	m.dice = game.Dice{4, 4}
@@ -70,7 +70,7 @@ func TestAIAnimationReachesResult(t *testing.T) {
 }
 
 func TestRollAnimationBlocksKeysThenStartsTurn(t *testing.T) {
-	m := New(ai.NewClient("http://127.0.0.1:0", "x"), nil)
+	m := New(ai.NewClient("http://127.0.0.1:0", "x"), nil, nil)
 	m.persona = ai.Personas[0]
 	m.board = game.NewBoard()
 	m.phase = phaseHumanRoll
@@ -91,12 +91,13 @@ func TestRollAnimationBlocksKeysThenStartsTurn(t *testing.T) {
 
 func TestNewPersonaIsAddedAndSaved(t *testing.T) {
 	store := &ai.PersonaStore{Path: filepath.Join(t.TempDir(), "personas.json")}
-	m := New(ai.NewClient("http://127.0.0.1:0", "x"), store)
+	m := New(ai.NewClient("http://127.0.0.1:0", "x"), store, nil)
 	n := len(ai.Personas)
 	if len(m.roster) != n {
 		t.Fatalf("roster has %d personas, want %d", len(m.roster), n)
 	}
 
+	m = key(m, "o") // menu: choose opponent
 	m = key(m, "up") // wraps to "+ New opponent…"
 	m = key(m, "enter")
 	if m.phase != phaseNewPersona {
@@ -124,13 +125,13 @@ func TestNewPersonaIsAddedAndSaved(t *testing.T) {
 	if err != nil || len(saved) != 1 || saved[0].Name != "Queen" {
 		t.Fatalf("saved %v, %v", saved, err)
 	}
-	if again := New(ai.NewClient("http://127.0.0.1:0", "x"), store); len(again.roster) != n+1 {
+	if again := New(ai.NewClient("http://127.0.0.1:0", "x"), store, nil); len(again.roster) != n+1 {
 		t.Fatalf("reloaded roster has %d personas, want %d", len(again.roster), n+1)
 	}
 }
 
 func TestNewPersonaFailureKeepsText(t *testing.T) {
-	m := New(ai.NewClient("http://127.0.0.1:0", "x"), nil)
+	m := New(ai.NewClient("http://127.0.0.1:0", "x"), nil, nil)
 	m, _ = mustModel(m.startNewPersona())
 	m.input.SetValue("a pirate")
 	m, _ = mustModel(m.Update(tea.KeyMsg{Type: tea.KeyEnter}))

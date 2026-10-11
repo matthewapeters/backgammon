@@ -15,12 +15,15 @@ import (
 
 	"github.com/MatthewAPeters/backgammon/internal/ai"
 	"github.com/MatthewAPeters/backgammon/internal/game"
+	"github.com/MatthewAPeters/backgammon/internal/history"
 )
 
 type phase int
 
 const (
-	phasePersona    phase = iota
+	phaseMenu       phase = iota
+	phaseAbout            // reading about the game
+	phasePersona          // choosing an opponent
 	phaseNewPersona       // typing a description of a new opponent
 	phaseGenerating       // waiting for the LLM to write the new opponent
 	phaseOpening
@@ -56,7 +59,19 @@ type Model struct {
 	store    *ai.PersonaStore // nil means custom personas are not saved
 	input    textinput.Model  // new persona description
 	genID    int              // ignores results from an abandoned generation
-	menuNote string           // message shown on the persona screens
+	menuNote string           // message shown on the menu screens
+
+	// Main menu and about page.
+	menu       int  // menu cursor
+	confirmNew bool // asking whether to abandon the unfinished game
+	about      struct{ tab, scroll int }
+
+	// rec is the current game's record, or the unfinished game the menu
+	// offers to resume. It is saved to games after every turn.
+	rec      *history.Game
+	games    *history.Store // nil means games are not saved
+	saveNote string         // why the last save failed, if it did
+	scoreVs  string         // the persona the score is kept against
 
 	phase phase
 	board game.Board
@@ -94,24 +109,47 @@ type Model struct {
 	llmStatus string
 	spinner   spinner.Model
 	width     int
+	height    int
 }
 
-// New returns the initial model. Custom personas are loaded from store,
-// which may be nil to offer only the built-in roster without saving new ones.
-func New(client *ai.Client, store *ai.PersonaStore) Model {
+// New returns the initial model, showing the main menu. Custom personas are
+// loaded from store, and past games from games; either may be nil to not
+// save them. The default opponent is whoever was played last.
+func New(client *ai.Client, store *ai.PersonaStore, games *history.Store) Model {
 	sp := spinner.New(spinner.WithSpinner(spinner.Dot))
 	in := textinput.New()
 	in.Placeholder = "e.g. Grumpy Cat, or a retired chess champion who thinks dice are beneath her"
 	in.CharLimit = 300
 	in.Width = 60
+	styleInput(&in)
 	m := Model{client: client, spinner: sp, selected: -1, aiLast: [2]int{-1, -1},
-		roster: slices.Clone(ai.Personas), store: store, input: in}
+		roster: slices.Clone(ai.Personas), store: store, games: games, input: in}
 	if store != nil {
 		custom, err := store.Load()
 		if err != nil {
 			m.menuNote = "Couldn't load your opponents: " + shortErr(err)
 		}
 		m.roster = append(m.roster, custom...)
+	}
+	m.persona = m.roster[0]
+	if games != nil {
+		saved, err := games.Load()
+		if err != nil {
+			m.menuNote = "Couldn't load your game history: " + shortErr(err)
+		}
+		last, unfinished := history.Latest(saved)
+		if last != nil {
+			m.persona = last.Persona
+		}
+		m.rec = unfinished
+	}
+	// Prefer the roster's copy, which may have been edited since.
+	if i := slices.IndexFunc(m.roster, func(p ai.Persona) bool { return p.Name == m.persona.Name }); i >= 0 {
+		m.pick = i
+		m.persona = m.roster[i]
+	}
+	if m.canResume() {
+		m.menu = menuResume
 	}
 	return m
 }
@@ -121,7 +159,7 @@ type (
 	aiDecisionMsg struct{ dec ai.Decision }
 	aiStepMsg     struct{}
 	rollTickMsg   struct{ id int }
-	reactionMsg   struct{ text string }
+	reactionMsg   struct{ gameID, text string }
 	warmupMsg     struct{ err error }
 	personaMsg    struct {
 		id  int
@@ -144,7 +182,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg.String())
 
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
+		m.width, m.height = msg.Width, msg.Height
 		return m, nil
 
 	case spinner.TickMsg:
@@ -180,7 +218,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.personaCreated(msg)
 
 	case reactionMsg:
-		m.say(m.persona.Name, msg.text)
+		// The player may have moved on to another game already.
+		if m.rec != nil && m.rec.ID == msg.gameID {
+			m.say(m.persona.Name, msg.text)
+			m.save()
+		}
 		return m, nil
 	}
 	return m, nil
@@ -194,6 +236,10 @@ func (m Model) handleKey(k string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch m.phase {
+	case phaseMenu:
+		return m.keyMenu(k)
+	case phaseAbout:
+		return m.keyAbout(k)
 	case phasePersona:
 		return m.keyPersona(k)
 	case phaseGenerating:
@@ -204,25 +250,54 @@ func (m Model) handleKey(k string) (tea.Model, tea.Cmd) {
 			return m, m.input.Focus()
 		}
 	case phaseOpening:
-		if isConfirm(k) {
+		switch {
+		case isConfirm(k):
 			return m.finishOpening()
+		case k == "m":
+			return m.toMenu(), nil
 		}
 	case phaseHumanRoll:
-		if isConfirm(k) || k == "r" {
-			return m, m.startRoll(game.RollDice())
+		switch {
+		case isConfirm(k) || k == "r":
+			cmd := m.startRoll(game.RollDice())
+			m.setPending(history.Human)
+			return m, cmd
+		case k == "m":
+			return m.toMenu(), nil
 		}
 	case phaseHumanMove:
+		if k == "m" {
+			// The roll is saved, so resuming restarts this turn with the same dice.
+			return m.toMenu(), nil
+		}
 		return m.keyMove(k)
 	case phaseGameOver:
 		switch k {
 		case "n", "enter", " ", "space":
-			return m.newGame()
+			return m.startGame()
 		case "p":
 			m.phase = phasePersona
+		case "m":
+			return m.toMenu(), nil
 		}
 	}
 	return m, nil
 }
+
+// toMenu shows the main menu. A game in progress stays saved for resuming.
+func (m Model) toMenu() Model {
+	m.phase = phaseMenu
+	m.confirmNew = false
+	m.menuNote = ""
+	m.menu = menuNew
+	if m.canResume() {
+		m.menu = menuResume
+	}
+	return m
+}
+
+// canResume reports whether there is an unfinished game to go back to.
+func (m Model) canResume() bool { return m.rec != nil && m.rec.Status == history.InProgress }
 
 func isConfirm(k string) bool { return k == "enter" || k == " " || k == "space" }
 
@@ -243,24 +318,101 @@ func (m Model) keyPersona(k string) (tea.Model, tea.Cmd) {
 		if m.pick == len(m.roster) {
 			return m.startNewPersona()
 		}
-		m.menuNote = ""
 		m.persona = m.roster[m.pick]
-		m.score = [2]int{}
-		m.log = nil
-		m.say("", fmt.Sprintf("You sit down across from the %s.", m.persona.Name))
-		if m.llmStatus != "ready" {
-			m.llmStatus = "loading model…"
-		}
-		client := m.client
-		warm := func() tea.Msg {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-			defer cancel()
-			return warmupMsg{client.Warmup(ctx)}
-		}
-		next, cmd := m.newGame()
-		return next, tea.Batch(cmd, warm)
+		m = m.toMenu()
+		m.menu = menuNew
+	case "esc", "m":
+		return m.toMenu(), nil
 	}
 	return m, nil
+}
+
+// warmup loads the model in the background so the first move is quick.
+func (m *Model) warmup() tea.Cmd {
+	if m.llmStatus != "ready" {
+		m.llmStatus = "loading model…"
+	}
+	client := m.client
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		return warmupMsg{client.Warmup(ctx)}
+	}
+}
+
+// sitDown prepares to play m.persona: the score restarts when the opponent changes.
+func (m *Model) sitDown() {
+	if m.scoreVs != m.persona.Name {
+		m.score = [2]int{}
+		m.scoreVs = m.persona.Name
+	}
+	m.menuNote = ""
+	m.confirmNew = false
+}
+
+// startGame starts a new game against m.persona. Callers check that an
+// unfinished game may be abandoned first.
+func (m Model) startGame() (tea.Model, tea.Cmd) {
+	if m.canResume() {
+		m.rec.Status = history.Abandoned
+		m.save()
+	}
+	m.sitDown()
+	warm := m.warmup()
+	next, cmd := m.newGame()
+	return next, tea.Batch(cmd, warm)
+}
+
+// resume continues the unfinished game in m.rec where it left off.
+func (m Model) resume() (tea.Model, tea.Cmd) {
+	rec := m.rec
+	board, err := rec.Board()
+	if err != nil {
+		m.menuNote = "Couldn't resume that game: " + shortErr(err)
+		return m, nil
+	}
+	m.persona = rec.Persona
+	m.sitDown()
+	m.resetTurnState()
+	m.board = board
+	m.opening = rec.Opening
+	m.log = nil
+	for _, l := range rec.Log[max(0, len(rec.Log)-maxLog):] {
+		m.log = append(m.log, logEntry{l.Who, l.Text})
+	}
+	m.say("", fmt.Sprintf("You return to your game against the %s.", m.persona.Name))
+	m.save()
+	warm := m.warmup()
+
+	// The persona reacts to the human's last play, so grade it again.
+	if n := len(rec.Turns); n > 0 && rec.Turns[n-1].Side == history.Human {
+		t := rec.Turns[n-1]
+		if before, err := rec.Replay(n - 1); err == nil {
+			m.review = ai.ReviewHumanPlay(before, t.Dice, game.Play{Moves: t.GameMoves(), Result: board})
+		}
+	}
+
+	switch {
+	case rec.Pending != nil && rec.Pending.Side == history.Human:
+		m.startHumanTurn(rec.Pending.Dice)
+		return m, warm
+	case rec.Pending != nil:
+		next, think := m.startAITurn(rec.Pending.Dice)
+		return next, tea.Batch(think, warm)
+	case len(rec.Turns) == 0:
+		// The opening roll is the first turn's dice.
+		next, cmd := m.finishOpening()
+		return next, tea.Batch(cmd, warm)
+	case rec.Next() == history.Human:
+		m.phase = phaseHumanRoll
+		m.dice = game.Dice{}
+		m.status = "Your turn. Press space to roll."
+		return m, warm
+	}
+	roll := m.startRoll(game.RollDice())
+	m.setPending(history.AI)
+	next, think := m.startAITurn(m.dice)
+	return next, tea.Batch(think, roll, warm)
 }
 
 func (m Model) startNewPersona() (tea.Model, tea.Cmd) {
@@ -324,8 +476,7 @@ func (m Model) personaCreated(msg personaMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) newGame() (tea.Model, tea.Cmd) {
-	m.board = game.NewBoard()
+func (m *Model) resetTurnState() {
 	m.roll.active = false
 	m.review = nil
 	m.made = nil
@@ -333,19 +484,32 @@ func (m Model) newGame() (tea.Model, tea.Cmd) {
 	m.selected = -1
 	m.aiLast = [2]int{-1, -1}
 	m.dice = game.Dice{}
+}
+
+func (m Model) newGame() (tea.Model, tea.Cmd) {
+	m.board = game.NewBoard()
+	m.resetTurnState()
 	for {
 		m.opening = [2]int{game.RollDie(), game.RollDie()}
 		if m.opening[0] != m.opening[1] {
 			break
 		}
 	}
+	m.rec = history.NewGame(m.persona, m.opening, time.Now())
+	m.log = nil
+	m.say("", fmt.Sprintf("You sit down across from the %s.", m.persona.Name))
+	m.save()
 	m.phase = phaseOpening
+	m.status = m.openingStatus()
+	return m, nil
+}
+
+func (m Model) openingStatus() string {
 	first := "You go first"
 	if m.opening[1] > m.opening[0] {
 		first = m.persona.Name + " goes first"
 	}
-	m.status = fmt.Sprintf("Opening roll: you %d, %s %d. %s! (space)", m.opening[0], m.persona.Name, m.opening[1], first)
-	return m, nil
+	return fmt.Sprintf("Opening roll: you %d, %s %d. %s! (space)", m.opening[0], m.persona.Name, m.opening[1], first)
 }
 
 func (m Model) finishOpening() (tea.Model, tea.Cmd) {
@@ -529,10 +693,12 @@ func (m Model) commitHumanTurn() (tea.Model, tea.Cmd) {
 	} else {
 		m.say("", "You play "+pl.String())
 	}
+	m.recordTurn(history.Human, pl.Moves)
 	if w, won := m.board.Winner(); won {
 		return m.endGame(w)
 	}
 	roll := m.startRoll(game.RollDice())
+	m.setPending(history.AI)
 	next, think := m.startAITurn(m.dice)
 	return next, tea.Batch(think, roll)
 }
@@ -571,6 +737,7 @@ func (m Model) applyAIDecision(dec ai.Decision) (tea.Model, tea.Cmd) {
 	} else {
 		m.say("", m.persona.Name+" plays "+playInHumanNumbering(dec.Play))
 	}
+	m.recordTurn(history.AI, dec.Play.Moves)
 	m.phase = phaseAIMoving
 	m.status = fmt.Sprintf("%s rolled %s.", m.persona.Name, m.dice)
 	return m, tea.Tick(aiStepDelay, func(time.Time) tea.Msg { return aiStepMsg{} })
@@ -600,14 +767,22 @@ func (m Model) endGame(w game.Player) (tea.Model, tea.Cmd) {
 	m.winner = w
 	m.winKind = m.board.WinType(w)
 	m.score[w] += int(m.winKind)
+	if m.rec != nil {
+		m.rec.Finish(w, m.winKind)
+		m.save()
+	}
 	pts := int(m.winKind)
 	if w == game.Human {
-		m.status = fmt.Sprintf("You win a %s (%d pt)! n: new game · p: change opponent · q: quit", m.winKind, pts)
+		m.status = fmt.Sprintf("You win a %s (%d pt)! n: new game · p: change opponent · m: menu", m.winKind, pts)
 	} else {
-		m.status = fmt.Sprintf("%s wins a %s (%d pt). n: new game · p: change opponent · q: quit", m.persona.Name, m.winKind, pts)
+		m.status = fmt.Sprintf("%s wins a %s (%d pt). n: new game · p: change opponent · m: menu", m.persona.Name, m.winKind, pts)
 	}
 
 	client, persona := m.client, m.persona
+	var id string
+	if m.rec != nil {
+		id = m.rec.ID
+	}
 	aiWon := w == game.AI
 	situation := fmt.Sprintf("The backgammon game just ended. You %s by a %s. React to the result.",
 		map[bool]string{true: "WON", false: "LOST"}[aiWon], m.winKind)
@@ -618,15 +793,51 @@ func (m Model) endGame(w game.Player) (tea.Model, tea.Cmd) {
 		if err != nil || text == "" {
 			text = ai.FallbackReaction(persona, aiWon)
 		}
-		return reactionMsg{text}
+		return reactionMsg{id, text}
 	}
 	return m, react
 }
 
+// maxLog is how much of the chat log is kept on screen; the record keeps it all.
+const maxLog = 50
+
 func (m *Model) say(who, text string) {
 	m.log = append(m.log, logEntry{who, text})
-	if len(m.log) > 50 {
-		m.log = m.log[len(m.log)-50:]
+	if len(m.log) > maxLog {
+		m.log = m.log[len(m.log)-maxLog:]
+	}
+	if m.rec != nil {
+		m.rec.Say(who, text)
+	}
+}
+
+// recordTurn saves the turn just played with m.dice.
+func (m *Model) recordTurn(s history.Side, moves []game.Move) {
+	if m.rec != nil {
+		m.rec.AddTurn(s, m.dice, moves)
+		m.save()
+	}
+}
+
+// setPending saves m.dice as rolled for s's turn, so quitting and resuming
+// can't reroll them.
+func (m *Model) setPending(s history.Side) {
+	if m.rec != nil {
+		m.rec.Pending = &history.Roll{Side: s, Dice: m.dice}
+		m.save()
+	}
+}
+
+// save writes the game record, noting any failure on screen rather than
+// interrupting play.
+func (m *Model) save() {
+	if m.games == nil || m.rec == nil {
+		return
+	}
+	m.rec.Updated = time.Now()
+	m.saveNote = ""
+	if err := m.games.Save(m.rec); err != nil {
+		m.saveNote = "Not saving games: " + shortErr(err)
 	}
 }
 
