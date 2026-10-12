@@ -11,18 +11,21 @@ import (
 )
 
 const (
-	panelW   = 42
-	logLines = 15
+	paneW = 40 // the side panel, inlay lining included
+	// The play screen inside its frame: the board (which ends in walnut),
+	// the panel and its shadow, and a walnut edge.
+	screenInW = boardInW + paneW + 1 + edgeW
+	screenW   = screenInW + 6
 )
 
 var (
-	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#e6c27a"))
-	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#8a8a8a"))
-	italicDim    = dimStyle.Italic(true)
-	personaStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#e6c27a"))
-	youStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ef6b6b"))
-	statusStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#f3e9d2")).Bold(true)
-	panelStyle   = lipgloss.NewStyle().Width(panelW).PaddingLeft(2)
+	dimStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#8a8a8a"))
+
+	// The panel and status line sit on the board's wood and felt.
+	plateName = lipgloss.NewStyle().Foreground(lipgloss.Color("#e6c27a")).Background(walnut).Bold(true)
+	plateDim  = lipgloss.NewStyle().Foreground(felt).Background(walnut)
+	plateText = lipgloss.NewStyle().Foreground(labelFg).Background(walnut).Bold(true)
+	youOnFelt = onFelt(humanCol).Bold(true)
 )
 
 func (m Model) View() string {
@@ -36,57 +39,142 @@ func (m Model) View() string {
 	case phaseNewPersona, phaseGenerating:
 		return m.viewNewPersona()
 	}
-	board := m.renderBoard()
-	var main string
-	if m.width > 0 && m.width < boardW+panelW {
-		main = lipgloss.JoinVertical(lipgloss.Left, board, m.renderPanel())
+	board := m.boardLines()
+	w := screenInW
+	var lines []string
+	if m.width == 0 || m.width >= screenW {
+		pane := m.paneLines(paneW, len(board))
+		for i := range board {
+			lines = append(lines, board[i]+pane[i]+wood(edgeW))
+		}
 	} else {
-		main = lipgloss.JoinHorizontal(lipgloss.Top, board, m.renderPanel())
+		// Too narrow for the panel beside the board: put it underneath.
+		w = boardInW
+		lines = append(board, walnutBg.Render(strings.Repeat(" ", w)))
+		for _, l := range m.paneLines(w-2*edgeW-1, len(board)-4) {
+			lines = append(lines, wood(edgeW)+l+wood(edgeW))
+		}
 	}
-	return lipgloss.JoinVertical(lipgloss.Left,
-		main,
-		statusStyle.Render(m.statusLine()),
-		dimStyle.Render(m.helpLine()),
-	)
+	lines = append(lines, padBg(walnutBg.Render("   ")+plateText.Render(m.statusLine()), w, walnutBg))
+	return m.place(lipgloss.JoinVertical(lipgloss.Left,
+		inlayW(lines, w),
+		footerW(m.helpLine(), w+6),
+	))
 }
 
-func (m Model) renderPanel() string {
-	var b strings.Builder
-	b.WriteString(personaStyle.Render(m.persona.Name) + "\n")
-	b.WriteString(italicDim.Render(m.persona.Tagline) + "\n\n")
-	fmt.Fprintf(&b, "%s %s %d  %s %d\n", dimStyle.Render("Score"),
-		youStyle.Render("You"), m.score[game.Human], personaStyle.Render(shortName(m.persona)), m.score[game.AI])
-	fmt.Fprintf(&b, "%s  %s %d  %s %d\n", dimStyle.Render("Pips"),
-		youStyle.Render("You"), m.board.PipCount(game.Human), personaStyle.Render(shortName(m.persona)), m.board.PipCount(game.AI))
+// paneLines renders the side panel as a felt pane lined with inlay, w cells
+// wide (plus its shadow) and h tall: a walnut nameplate on top, the score,
+// pips and the game log on the felt, and the LLM's status on a plate below.
+// Its rows line up with the board's: nameplate, shadow, lining.
+func (m Model) paneLines(w, h int) []string {
+	tw := w - 4 // text width inside the lining and a cell of felt each side
+	var body []string
+	add := func(ls ...string) { body = append(body, ls...) }
+
+	add(styled(m.persona.Tagline, tw, inkItalic)...)
+	add("")
+	add(m.scoreTable()...)
+	if m.saveNote != "" {
+		add(styled(m.saveNote, tw, inkDim)...)
+	}
+	add(inkDim.Render(strings.Repeat("─", tw)))
+
+	var log []string
+	for _, e := range m.log {
+		if e.who == "" {
+			log = append(log, styled("· "+e.text, tw, inkDim)...)
+			continue
+		}
+		name := shortName(m.persona) + ":"
+		ls := wrapWords(name+" "+e.text, tw)
+		for i, l := range ls {
+			if i == 0 && strings.HasPrefix(l, name) {
+				log = append(log, inkBold.Render(name)+inkStyle.Render(strings.TrimPrefix(l, name)))
+			} else {
+				log = append(log, inkStyle.Render(l))
+			}
+		}
+	}
+	if m.phase == phaseAIThinking && !m.roll.active {
+		sp := m.spinner
+		sp.Style = inkStyle
+		log = append(log, sp.View()+inkDim.Render(" "+shortName(m.persona)+" is thinking…"))
+	}
+	room := max(0, h-5-len(body))
+	if len(log) > room {
+		log = log[len(log)-room:]
+	}
+	add(log...)
+
 	llm := m.llmStatus
 	if llm == "" {
 		llm = "idle"
 	}
-	b.WriteString(dimStyle.Render("LLM   "+llm) + "\n")
-	if m.saveNote != "" {
-		b.WriteString(dimStyle.Width(panelW-2).Render(m.saveNote) + "\n")
+	lining := bandStyle.Render("▚")
+	band := bandStyle.Render(strings.Repeat("▚", w))
+	out := []string{
+		plateName.Width(w).Align(lipgloss.Center).Render(m.persona.Name) + wood(1),
+		shadowTop(w),
+		band + shadowSide(),
 	}
-	b.WriteString(dimStyle.Render(strings.Repeat("─", panelW-2)) + "\n")
-
-	var logText []string
-	textW := panelW - 2
-	for _, e := range m.log {
-		var line string
-		if e.who == "" {
-			line = dimStyle.Width(textW).Render("· " + e.text)
-		} else {
-			line = lipgloss.NewStyle().Width(textW).Render(personaStyle.Render(shortName(m.persona)+":") + " " + e.text)
+	for i := range h - 5 {
+		l := ""
+		if i < len(body) {
+			l = body[i]
 		}
-		logText = append(logText, strings.Split(line, "\n")...)
+		out = append(out, lining+padBg(feltBg.Render(" ")+l, w-2, feltBg)+lining+shadowSide())
 	}
-	if m.phase == phaseAIThinking && !m.roll.active {
-		logText = append(logText, m.spinner.View()+dimStyle.Render(" "+shortName(m.persona)+" is thinking…"))
+	return append(out,
+		band+shadowSide(),
+		plateDim.Width(w).Align(lipgloss.Center).Render("LLM "+llm)+wood(1),
+	)
+}
+
+// scoreTable is the score and pip counts as a small table, with a column
+// per player and the numbers right-aligned under the names.
+func (m Model) scoreTable() []string {
+	name := shortName(m.persona)
+	youW, themW := 3, max(lipgloss.Width(name), 3)
+	right := func(s string, w int) string { return strings.Repeat(" ", max(0, w-lipgloss.Width(s))) + s }
+	label := func(s string) string { return inkDim.Render(fmt.Sprintf("%-6s", s)) }
+	row := func(title string, you, them int) string {
+		return label(title) + inkStyle.Render(right(fmt.Sprint(you), youW+2)+right(fmt.Sprint(them), themW+3))
 	}
-	if len(logText) > logLines {
-		logText = logText[len(logText)-logLines:]
+	return []string{
+		label("") + feltBg.Render("  ") + youOnFelt.Render("You") + feltBg.Render("   ") + inkBold.Render(right(name, themW)),
+		row("Score", m.score[game.Human], m.score[game.AI]),
+		row("Pips", m.board.PipCount(game.Human), m.board.PipCount(game.AI)),
 	}
-	b.WriteString(strings.Join(logText, "\n"))
-	return panelStyle.Render(b.String())
+}
+
+// wrapWords word-wraps plain text to w cells.
+func wrapWords(text string, w int) []string {
+	var out []string
+	line := ""
+	for _, word := range strings.Fields(text) {
+		switch {
+		case line == "":
+			line = word
+		case lipgloss.Width(line)+1+lipgloss.Width(word) <= w:
+			line += " " + word
+		default:
+			out = append(out, line)
+			line = word
+		}
+	}
+	if line != "" {
+		out = append(out, line)
+	}
+	return out
+}
+
+// styled word-wraps plain text to w cells and renders each line in st.
+func styled(text string, w int, st lipgloss.Style) []string {
+	ls := wrapWords(text, w)
+	for i, l := range ls {
+		ls[i] = st.Render(l)
+	}
+	return ls
 }
 
 // shortName is the persona name without a leading adjective, for tight spots.

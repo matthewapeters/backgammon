@@ -17,9 +17,10 @@ model the server lists is used.
 ## How the AI plays
 
 The rules engine (`internal/game`) generates every legal play and ranks them with a
-heuristic. The LLM receives the board from its own point of view plus the top 10
-candidates, and returns `{"choice": n, "comment": "..."}`. The output is constrained
-with a JSON schema and reasoning is disabled, so a move takes about 2 seconds. If the
+heuristic. The LLM receives the board from its own point of view plus up to 10 of the
+top candidates (only those within the "solid" margin of the best, so it can't pick a
+blunder), and returns `{"choice": n, "comment": "..."}`. The output is constrained with
+a JSON schema and reasoning is disabled, so a move takes about 2 seconds. If the
 server is unreachable or the reply is unusable, the heuristic's top play is used along
 with a canned in-character line, so the game never stalls.
 
@@ -39,7 +40,8 @@ still report `TERM=xterm`, which would otherwise drop the palette to 16 colors. 
 The game opens on a main menu with the opponent you played last. From there you can
 start a new game, resume your last unfinished game, choose another opponent, or read
 **About the game**: a short history of backgammon, the terminology, how the rules
-engine and its heuristic work, how the LLM fits in, and how to make your own opponents.
+engine and its heuristic work, a table of what the heuristic values and why, how the
+LLM fits in, and how to make your own opponents.
 Press `m` during a game to go back to the menu. The game is saved, so you can resume it.
 
 ## Saved games

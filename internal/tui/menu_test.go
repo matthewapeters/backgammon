@@ -160,3 +160,21 @@ func TestScreensFitTheFrame(t *testing.T) {
 		}
 	}
 }
+
+func TestPlayScreenFitsTheFrame(t *testing.T) {
+	m := playToHumanMove(t, newWithHistory(t, nil))
+	for _, tt := range []struct{ termW, want int }{{screenW, screenW}, {boardW + 10, boardW}} {
+		m.width, m.height = tt.termW, 40
+		// Every line is centered in the terminal, and the frame (here its
+		// top band) is the expected width.
+		lines := strings.Split(m.View(), "\n")
+		for i, l := range lines {
+			if w := ansi.StringWidth(l); w != tt.termW {
+				t.Errorf("terminal %d: line %d is %d wide: %q", tt.termW, i, w, ansi.Strip(l))
+			}
+		}
+		if w := ansi.StringWidth(strings.TrimSpace(ansi.Strip(lines[1]))) + 4; w != tt.want {
+			t.Errorf("terminal %d: frame is %d wide, want %d", tt.termW, w, tt.want)
+		}
+	}
+}

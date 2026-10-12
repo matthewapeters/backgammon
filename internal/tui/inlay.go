@@ -97,15 +97,28 @@ func grain(n, seed int) string {
 }
 
 // inlay frames felt lines (each innerW wide) in walnut and inlay banding.
-func inlay(lines []string) string {
+func inlay(lines []string) string { return inlayW(lines, innerW) }
+
+// inlayW frames lines that are each w cells wide.
+func inlayW(lines []string, w int) string {
 	side := walnutBg.Render("  ")
 	band := func(n int) string { return bandStyle.Render(strings.Repeat("▚", n)) }
-	out := []string{grain(frameW, 1), side + band(innerW+2) + side}
+	out := []string{grain(w+6, 1), side + band(w+2) + side}
 	for _, l := range lines {
 		out = append(out, side+band(1)+l+band(1)+side)
 	}
-	out = append(out, side+band(innerW+2)+side, grain(frameW, 2))
+	out = append(out, side+band(w+2)+side, grain(w+6, 2))
 	return strings.Join(out, "\n")
+}
+
+// padBg pads a rendered line with cells of style bg to w cells, or
+// truncates it to w.
+func padBg(s string, w int, bg lipgloss.Style) string {
+	n := lipgloss.Width(s)
+	if n > w {
+		return ansi.Truncate(s, w, "")
+	}
+	return s + bg.Render(strings.Repeat(" ", w-n))
 }
 
 // pointRows draws a row of twelve points, six each side of a walnut bar,
@@ -115,10 +128,12 @@ func pointRows(top bool) []string {
 	if !top {
 		shape = []string{shape[2], shape[1], shape[0]}
 	}
-	barW := innerW - 12*pointW
+	barW := 9 + (innerW-12*pointW-9)%2 // keeps the margins even
+	margin := (innerW - 12*pointW - barW) / 2
 	rows := make([]string, len(shape))
 	for y, s := range shape {
 		var b strings.Builder
+		b.WriteString(feltBg.Render(strings.Repeat(" ", margin)))
 		for i := range 12 {
 			if i == 6 {
 				b.WriteString(walnutBg.Render(strings.Repeat(" ", barW)))
@@ -129,6 +144,7 @@ func pointRows(top bool) []string {
 			}
 			b.WriteString(onFelt(col).Render(s))
 		}
+		b.WriteString(feltBg.Render(strings.Repeat(" ", innerW-12*pointW-barW-margin)))
 		rows[y] = b.String()
 	}
 	return rows
@@ -195,8 +211,11 @@ func discs(n int) string {
 func spaced(s string) string { return strings.Join(strings.Split(s, ""), " ") }
 
 // footer is a line of help text centered under the frame.
-func footer(s string) string {
-	return lipgloss.NewStyle().Width(frameW).Align(lipgloss.Center).Render(dimStyle.Render(s))
+func footer(s string) string { return footerW(s, frameW) }
+
+// footerW is a line of help text centered under a frame w cells wide.
+func footerW(s string, w int) string {
+	return lipgloss.NewStyle().Width(w).Align(lipgloss.Center).Render(dimStyle.Render(s))
 }
 
 // place centers a framed screen in the terminal.

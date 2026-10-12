@@ -19,8 +19,8 @@ const (
 )
 
 // Score gaps (in Evaluate units) separating the verdicts, calibrated on
-// simulated games: the second-best play trails the best by under 4.2 three
-// times in four, while a random legal play trails by about 7 at the median.
+// simulated games: the second-best play trails the best by under 4.4 three
+// times in four, while a random legal play trails by about 6.5 at the median.
 const (
 	solidGap   = 3.0
 	blunderGap = 8.0

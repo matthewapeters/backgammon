@@ -45,7 +45,7 @@ func TestChooseMoveUsesLLMChoice(t *testing.T) {
 	srv := fakeServer(t, http.StatusOK, `{"choice": 2, "comment": "Arr!"}`)
 	c := NewClient(srv.URL, "")
 	b := game.NewBoard()
-	d := game.Dice{3, 1}
+	d := game.Dice{2, 6} // several plays score close to the best
 	dec := c.ChooseMove(context.Background(), Personas[3], b, d, nil)
 	if dec.Err != nil {
 		t.Fatal(dec.Err)
@@ -119,5 +119,22 @@ func TestGeneratePersonaRejectsMissingVoice(t *testing.T) {
 	srv := fakeServer(t, http.StatusOK, `{"name": "Cat", "voice": " "}`)
 	if _, err := NewClient(srv.URL, "").GeneratePersona(context.Background(), "cat"); err == nil {
 		t.Fatal("expected an error")
+	}
+}
+
+func TestClosePlaysOffersOnlySolidPlays(t *testing.T) {
+	ranked := game.RankPlays(game.NewBoard(), game.AI, game.Dice{2, 6})
+	cands := closePlays(ranked, 10)
+	if len(cands) < 2 || len(cands) == len(ranked) {
+		t.Fatalf("got %d of %d plays", len(cands), len(ranked))
+	}
+	best := game.Evaluate(ranked[0].Result, game.AI)
+	for _, pl := range cands {
+		if gap := best - game.Evaluate(pl.Result, game.AI); gap >= solidGap {
+			t.Fatalf("offered %v, %.1f behind the best", pl, gap)
+		}
+	}
+	if got := closePlays(ranked, 1); len(got) != 1 || got[0].Result != ranked[0].Result {
+		t.Fatalf("cap of 1 gave %v", got)
 	}
 }

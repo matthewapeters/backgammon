@@ -20,6 +20,8 @@ type Client struct {
 	BaseURL string
 	Model   string // empty means "first model the server lists"
 	// MaxCandidates caps how many engine-ranked plays the model chooses from.
+	// Only plays the engine grades as solid (within solidGap of its best)
+	// are offered, so the persona's taste can't pick a blunder.
 	MaxCandidates int
 	HTTP          *http.Client
 }
@@ -155,13 +157,24 @@ type Decision struct {
 // previous play (nil if the AI is moving first) so the persona can react.
 func (c *Client) ChooseMove(ctx context.Context, p Persona, b game.Board, d game.Dice, review *Review) Decision {
 	plays := game.RankPlays(b, game.AI, d)
-	cands := plays[:min(len(plays), c.MaxCandidates)]
+	cands := closePlays(plays, c.MaxCandidates)
 
 	reply, err := c.pickWithLLM(ctx, p, b, d, review, cands)
 	if err != nil {
 		return Decision{Play: plays[0], Comment: pick(p.Fallback), Err: err}
 	}
 	return Decision{Play: cands[reply.Choice-1], Reaction: strings.TrimSpace(reply.Reaction), Comment: strings.TrimSpace(reply.Comment)}
+}
+
+// closePlays returns the leading plays of ranked, best-first, that score
+// within solidGap of the best, at most n of them.
+func closePlays(ranked []game.Play, n int) []game.Play {
+	best := game.Evaluate(ranked[0].Result, game.AI)
+	k := 1
+	for k < min(len(ranked), n) && best-game.Evaluate(ranked[k].Result, game.AI) < solidGap {
+		k++
+	}
+	return ranked[:k]
 }
 
 type moveReply struct {
@@ -194,7 +207,7 @@ func (c *Client) pickWithLLM(ctx context.Context, p Persona, b game.Board, d gam
 	if len(cands) == 1 && len(cands[0].Moves) == 0 {
 		u.WriteString("You have no legal moves and must pass.\n")
 	}
-	u.WriteString("\nOptions:\n")
+	u.WriteString("\nOptions, best first:\n")
 	enum := make([]int, len(cands))
 	for i, pl := range cands {
 		enum[i] = i + 1

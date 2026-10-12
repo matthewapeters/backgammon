@@ -14,11 +14,17 @@ import (
 // are wide, so a checker 4 cells wide and 2 rows tall reads as round.
 const (
 	pointW    = 6  // width of one point
-	halfH     = 10 // rows in each half of the board (stackRows checkers × 2 rows)
+	halfH     = 11 // rows in each half: stackRows checkers × 2 rows, and a row clear of the top edge
 	triLen    = 9  // rows a point's triangle spans, base to tip
 	stackRows = 5  // checkers drawn per point before showing a count
-	sideW     = 6  // bar and borne-off tray
-	boardW    = 12*pointW + sideW + 1 + sideW + 2
+	sideW     = 4  // bar and borne-off tray, as wide as a checker
+	edgeW     = 2  // walnut at the board's left edge, and after each pair of boxes
+	fieldW    = 1 + 6*pointW + 1 // half of the playing field with its inlay lining
+	// The board inside its frame is a row of boxes on walnut: the left
+	// field and the bar, then the right field and the tray. Each box casts
+	// a shadow one cell wide past its right edge (and a row above it).
+	boardInW = edgeW + (fieldW + 1) + (sideW + 1) + edgeW + (fieldW + 1) + (sideW + 1) + edgeW
+	boardW   = boardInW + 6 // with the inlay frame round it, as on the menus
 )
 
 var (
@@ -26,6 +32,7 @@ var (
 	labelFg    = lipgloss.Color("#f3e9d2")
 	felt       = lipgloss.Color("#c9ab7f") // playing surface
 	tray       = walnut                    // bar and off tray
+	shadow     = lipgloss.Color("#3f2814") // dark walnut shadows cast by the boxes
 	pointLight = lipgloss.Color("#f8f3e7")
 	pointDark  = lipgloss.Color("#8b5530")
 
@@ -158,13 +165,14 @@ func under(c cell) lipgloss.Color {
 //
 // top says which half of the board the column is in; rows count from the
 // board edge, so in the bottom half the disc's upper row is the inner one.
+// In the top half the stack starts a row in from the edge.
 func drawCheckers(col *column, n int, color lipgloss.Color, top bool) {
 	upper, lower := []string{"▟", "█", "█", "▙"}, []string{"▝", "▀", "▀", "▘"}
 	x0 := (len(col[0]) - 4) / 2
 	for k := range min(n, stackRows) {
-		upperY, lowerY := 2*k, 2*k+1
+		upperY, lowerY := 2*k+1, 2*k+2
 		if !top {
-			upperY, lowerY = lowerY, upperY
+			upperY, lowerY = 2*k+1, 2*k
 		}
 		for i := range 4 {
 			c := &col[upperY][x0+i]
@@ -180,25 +188,12 @@ func drawCheckers(col *column, n int, color lipgloss.Color, top bool) {
 	}
 }
 
-func (m Model) pointColor(r int) lipgloss.Color {
-	switch m.markFor(r) {
-	case markCursor:
-		return cursorCol
-	case markSelected:
-		return selectCol
-	case markDest:
-		return destCol
-	case markAIMove:
-		return aiMoveCol
-	}
-	if r%2 == 0 {
-		return pointDark
-	}
-	return pointLight
-}
-
 func (m Model) pointColumn(r int, top bool) column {
-	col := triangle(m.pointColor(r))
+	color := pointLight
+	if r%2 == 0 {
+		color = pointDark
+	}
+	col := triangle(color)
 	if n := m.board.C[game.Human][r]; n > 0 {
 		drawCheckers(&col, n, humanCol, top)
 	} else if n := m.board.OpponentAt(game.Human, r); n > 0 {
@@ -207,57 +202,39 @@ func (m Model) pointColumn(r int, top bool) column {
 	return col
 }
 
-func trayColor(mk mark) lipgloss.Color {
-	switch mk {
-	case markCursor:
-		return cursorCol
-	case markSelected:
-		return selectCol
-	case markDest:
-		return destCol
-	}
-	return tray
-}
-
 // barColumn shows the AI's checkers on the bar in the top half and the
 // human's in the bottom half.
 func (m Model) barColumn(top bool) column {
+	col := newColumn(sideW, tray)
 	if top {
-		bg := tray
-		if m.aiTouched(game.Bar) {
-			bg = aiMoveCol
-		}
-		col := newColumn(sideW, bg)
 		drawCheckers(&col, m.board.C[game.AI][game.Bar], aiCol, true)
-		return col
+	} else {
+		drawCheckers(&col, m.board.C[game.Human][game.Bar], humanCol, false)
 	}
-	col := newColumn(sideW, trayColor(m.markFor(game.Bar)))
-	drawCheckers(&col, m.board.C[game.Human][game.Bar], humanCol, false)
 	return col
 }
 
 // offColumn shows borne-off checkers as stacked edge-on slabs.
 func (m Model) offColumn(top bool) column {
-	p, color, bg := game.Human, humanCol, trayColor(m.markFor(game.Off))
+	p, color, bg := game.Human, humanCol, tray
 	if top {
-		p, color, bg = game.AI, aiCol, tray
-		if m.aiTouched(game.Off) {
-			bg = aiMoveCol
-		}
+		p, color = game.AI, aiCol
 	}
 	col := newColumn(sideW, bg)
 	n := m.board.C[p][game.Off]
-	slabs := min(n, halfH-1)
-	for y := range slabs {
-		for x := 1; x < sideW-1; x++ {
+	first := 0 // in the top half, clear of the edge like the checkers
+	if top {
+		first = 1
+	}
+	slabs := min(n, halfH-1-first)
+	for y := first; y < first+slabs; y++ {
+		for x := range sideW {
 			col[y][x] = cell{ch: "▀", fg: color, bg: bg}
 		}
 	}
 	if n > 0 {
-		label := fmt.Sprintf("%2d", n)
-		y := min(n, halfH-1)
-		for i, ch := range label {
-			col[y][2+i] = cell{ch: string(ch), fg: labelFg, bg: bg, bold: true}
+		for i, ch := range fmt.Sprintf("%2d", n) {
+			col[first+slabs][(sideW-2)/2+i] = cell{ch: string(ch), fg: labelFg, bg: bg, bold: true}
 		}
 	}
 	return col
@@ -265,15 +242,15 @@ func (m Model) offColumn(top bool) column {
 
 // renderHalf renders one half of the board; points are listed left to right.
 func (m Model) renderHalf(points []int, top bool) []string {
-	cols := make([]column, 0, 15)
+	edge, lining, side := newColumn(edgeW, walnut), inlayColumn(), shadowColumn()
+	cols := []column{edge, lining}
 	for i, r := range points {
 		if i == 6 {
-			cols = append(cols, m.barColumn(top))
+			cols = append(cols, lining, side, m.barColumn(top), side, edge, lining)
 		}
 		cols = append(cols, m.pointColumn(r, top))
 	}
-	divider := newColumn(1, walnut)
-	cols = append(cols, divider, m.offColumn(top))
+	cols = append(cols, lining, side, m.offColumn(top), side, edge)
 
 	lines := make([]string, halfH)
 	for y := range halfH {
@@ -294,31 +271,111 @@ func (m Model) renderHalf(points []int, top bool) []string {
 	return lines
 }
 
-// labelRow renders the point numbers on the walnut frame.
-func (m Model) labelRow(points []int, bar, off string) string {
+// inlayColumn is a one-cell strip of the checkered inlay that lines each
+// half of the playing field.
+func inlayColumn() column {
+	col := newColumn(1, pointDark)
+	for y := range col {
+		col[y][0] = cell{ch: "▚", fg: pointLight, bg: pointDark}
+	}
+	return col
+}
+
+// The boxes on the board and the side panel cast a shadow on the walnut
+// half a cell past their top and right edges.
+var shadowOnWood = lipgloss.NewStyle().Foreground(shadow).Background(walnut)
+
+// shadowColumn is the shadow down the right side of a box.
+func shadowColumn() column {
+	col := newColumn(1, walnut)
+	for y := range col {
+		col[y][0] = cell{ch: "▐", fg: shadow, bg: walnut}
+	}
+	return col
+}
+
+// shadowSide is one cell of the shadow down the right side of a box.
+func shadowSide() string { return shadowOnWood.Render("▐") }
+
+// shadowTop is the shadow above a box w cells wide, with the corner where
+// it meets the shadow down the box's right side.
+func shadowTop(w int) string { return shadowOnWood.Render(strings.Repeat("▀", w) + "▜") }
+
+func wood(n int) string { return walnutBg.Render(strings.Repeat(" ", n)) }
+
+// shadowRow is the row of shadows above the board's boxes. The bar's and
+// tray's start a cell in, to set them apart from the field's beside them.
+func shadowRow() string {
+	return wood(edgeW) + shadowTop(fieldW) + wood(1) + shadowTop(sideW-1) + wood(edgeW) +
+		shadowTop(fieldW) + wood(1) + shadowTop(sideW-1) + wood(edgeW)
+}
+
+// liningRow is the inlay strip along the top or bottom of the playing
+// field, between the points and the frame.
+func liningRow() string {
+	field := bandStyle.Render(strings.Repeat("▚", fieldW))
+	trayRow := lipgloss.NewStyle().Background(tray).Render(strings.Repeat(" ", sideW))
+	return wood(edgeW) + field + shadowSide() + trayRow + shadowSide() + wood(edgeW) +
+		field + shadowSide() + trayRow + shadowSide() + wood(edgeW)
+}
+
+// labelRow renders the point numbers on the walnut frame. Highlights
+// (the cursor, a selected checker, its destinations, the AI's last move)
+// color the labels, never the points themselves; the bar and tray are
+// labelled on the side whose checkers they hold.
+func (m Model) labelRow(points []int, top bool) string {
 	base := lipgloss.NewStyle().Background(walnut).Foreground(labelFg).Bold(true).Align(lipgloss.Center)
+	styled := func(s lipgloss.Style, mk mark) lipgloss.Style {
+		switch mk {
+		case markCursor:
+			return s.Background(cursorCol).Foreground(diceInk)
+		case markSource:
+			return s.Foreground(cursorCol).Underline(true)
+		case markSelected:
+			return s.Background(selectCol)
+		case markDest:
+			return s.Background(destCol).Foreground(diceInk)
+		case markAIMove:
+			return s.Background(aiMoveCol).Foreground(diceInk)
+		}
+		return s
+	}
+	// The AI's bar and tray are in the top half, the human's in the bottom.
+	trayMark := func(pos int) mark {
+		if top {
+			if m.aiTouched(pos) {
+				return markAIMove
+			}
+			return markNone
+		}
+		return m.markFor(pos)
+	}
+	// The top row always names the bar and tray; the bottom row only when
+	// one of them is highlighted.
+	trayLabel := func(name string, mk mark) string {
+		if top || mk != markNone {
+			return name
+		}
+		return ""
+	}
+
+	// Labels sit over their boxes: past the field's lining and shadow for
+	// the bar and tray.
 	var b strings.Builder
+	b.WriteString(base.Width(edgeW + 1).Render(""))
 	for i, r := range points {
 		if i == 6 {
-			b.WriteString(base.Width(sideW).Render(bar))
+			mk := trayMark(game.Bar)
+			b.WriteString(base.Width(2).Render(""))
+			b.WriteString(styled(base.Width(sideW).Align(lipgloss.Right), mk).Render(trayLabel("BAR", mk)))
+			b.WriteString(base.Width(1 + edgeW + 1).Render(""))
 		}
-		s := base.Width(pointW)
-		switch m.markFor(r) {
-		case markCursor:
-			s = s.Background(cursorCol).Foreground(diceInk)
-		case markSource:
-			s = s.Foreground(cursorCol).Underline(true)
-		case markSelected:
-			s = s.Background(selectCol)
-		case markDest:
-			s = s.Background(destCol).Foreground(diceInk)
-		case markAIMove:
-			s = s.Background(aiMoveCol).Foreground(diceInk)
-		}
-		b.WriteString(s.Render(fmt.Sprint(r)))
+		b.WriteString(styled(base.Width(pointW), m.markFor(r)).Render(fmt.Sprint(r)))
 	}
-	b.WriteString(base.Width(1).Render(""))
-	b.WriteString(base.Width(sideW).Render(off))
+	b.WriteString(base.Width(2).Render(""))
+	mk := trayMark(game.Off)
+	b.WriteString(styled(base.Width(sideW).Align(lipgloss.Right), mk).Render(trayLabel("OFF", mk)))
+	b.WriteString(base.Width(1 + edgeW).Render(""))
 	return b.String()
 }
 
@@ -336,9 +393,9 @@ func (m Model) middleRow() string {
 			right = placed
 		}
 	}
-	return left + lipgloss.NewStyle().Background(tray).Width(sideW).Render("") +
-		right + lipgloss.NewStyle().Background(walnut).Width(1).Render("") +
-		lipgloss.NewStyle().Background(tray).Width(sideW).Render("")
+	lining := bandStyle.Render("▚")
+	trayCell := shadowSide() + lipgloss.NewStyle().Background(tray).Width(sideW).Render("") + shadowSide()
+	return wood(edgeW) + lining + left + lining + trayCell + wood(edgeW) + lining + right + lining + trayCell + wood(edgeW)
 }
 
 func (m Model) renderDice() string {
@@ -376,16 +433,14 @@ func (m Model) renderDice() string {
 	return strings.Join(parts, gap)
 }
 
-func (m Model) renderBoard() string {
+// boardLines renders the board, each line boardInW wide.
+func (m Model) boardLines() []string {
 	topPts := []int{13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24}
 	botPts := []int{12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1}
-	lines := []string{m.labelRow(topPts, "BAR", "OFF")}
+	lines := []string{m.labelRow(topPts, true), shadowRow(), liningRow()}
 	lines = append(lines, m.renderHalf(topPts, true)...)
 	lines = append(lines, m.middleRow())
 	lines = append(lines, m.renderHalf(botPts, false)...)
-	lines = append(lines, m.labelRow(botPts, "", ""))
-	return lipgloss.NewStyle().
-		Border(lipgloss.OuterHalfBlockBorder()).
-		BorderForeground(walnut).
-		Render(strings.Join(lines, "\n"))
+	lines = append(lines, liningRow(), m.labelRow(botPts, false))
+	return lines
 }
