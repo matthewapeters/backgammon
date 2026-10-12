@@ -38,6 +38,8 @@ func (m Model) View() string {
 		return m.viewPersona()
 	case phaseNewPersona, phaseGenerating:
 		return m.viewNewPersona()
+	case phaseOffer:
+		return m.viewOffer()
 	}
 	board := m.boardLines()
 	w := screenInW
@@ -130,21 +132,29 @@ func (m Model) paneLines(w, h int) []string {
 	)
 }
 
-// scoreTable is the score and pip counts as a small table, with a column
-// per player and the numbers right-aligned under the names.
+// scoreTable is the match score, the player's record against this
+// opponent and the pip counts as a small table, with a column per player
+// and the numbers right-aligned under the names.
 func (m Model) scoreTable() []string {
 	name := shortName(m.persona)
 	youW, themW := 3, max(lipgloss.Width(name), 3)
 	right := func(s string, w int) string { return strings.Repeat(" ", max(0, w-lipgloss.Width(s))) + s }
-	label := func(s string) string { return inkDim.Render(fmt.Sprintf("%-6s", s)) }
+	label := func(s string) string { return inkDim.Render(fmt.Sprintf("%-8s", s)) }
 	row := func(title string, you, them int) string {
 		return label(title) + inkStyle.Render(right(fmt.Sprint(you), youW+2)+right(fmt.Sprint(them), themW+3))
 	}
-	return []string{
+	out := []string{
 		label("") + feltBg.Render("  ") + youOnFelt.Render("You") + feltBg.Render("   ") + inkBold.Render(right(name, themW)),
-		row("Score", m.score[game.Human], m.score[game.AI]),
-		row("Pips", m.board.PipCount(game.Human), m.board.PipCount(game.AI)),
 	}
+	if m.match != nil {
+		out = append(out, row("Match", m.match.Score[game.Human], m.match.Score[game.AI])+
+			inkDim.Render(fmt.Sprintf("  to %d", m.match.Length)))
+	}
+	return append(out,
+		row("Matches", m.record.Matches[game.Human], m.record.Matches[game.AI]),
+		row("Games", m.record.Games[game.Human], m.record.Games[game.AI]),
+		row("Pips", m.board.PipCount(game.Human), m.board.PipCount(game.AI)),
+	)
 }
 
 // wrapWords word-wraps plain text to w cells.
@@ -209,6 +219,9 @@ func (m Model) helpLine() string {
 	case phaseHumanRoll, phaseOpening:
 		return "space roll/continue · m menu · q quit"
 	case phaseGameOver:
+		if m.midMatch() {
+			return "space next game · m menu · q quit"
+		}
 		return "n new game · p change opponent · m menu · q quit"
 	}
 	return "q quit"

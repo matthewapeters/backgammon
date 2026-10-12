@@ -59,7 +59,8 @@ This game has no doubling cube: each game is worth 1, 2 or 3 points depending on
 - *Bearing off*: once all your checkers are home, you remove them from the board. First to bear off all 15 wins.
 - *Single game*: the loser has borne off at least one checker. Worth 1 point.
 - *Gammon*: the loser has borne off nothing. Worth 2.
-- *Backgammon*: a gammon where the loser also still has a checker on the bar or in the winner's home board. Worth 3.`},
+- *Backgammon*: a gammon where the loser also still has a checker on the bar or in the winner's home board. Worth 3.
+- *Match*: a series of games played to 3, 5, 7, 9 or 11 points. Each game's points add up, and the first to reach the target wins the match. Before a match your opponent names the stakes: something of theirs against something of yours. The stakes are just for fun.`},
 
 	{"Engine", `# The rules engine
 

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -22,7 +23,8 @@ func newWithHistory(t *testing.T, games *history.Store) Model {
 func playToHumanMove(t *testing.T, m Model) Model {
 	t.Helper()
 	m = key(m, "n")
-	m = key(m, " ") // opening roll
+	m = key(m, "enter") // accept the challenge
+	m = key(m, " ")     // opening roll
 	for range 10 {
 		switch {
 		case m.phase == phaseHumanMove && !m.turnDone():
@@ -46,6 +48,16 @@ func playToHumanMove(t *testing.T, m Model) Model {
 	}
 	t.Fatal("never reached a human move")
 	return m
+}
+
+// pickLength accepts the challenge for a match of n points.
+func pickLength(t *testing.T, m Model, n int) Model {
+	t.Helper()
+	if m.phase != phaseOffer {
+		t.Fatalf("phase %v, want the challenge", m.phase)
+	}
+	m.offer.pick = slices.Index(matchLengths, n)
+	return key(m, "enter")
 }
 
 func TestResumeRestoresGameWithSameDice(t *testing.T) {
@@ -93,6 +105,10 @@ func TestNewGameAsksBeforeAbandoning(t *testing.T) {
 	}
 	m = key(m, "n")
 	m = key(m, "y")
+	if m.phase != phaseOffer || m.rec.ID != old {
+		t.Fatalf("phase %v, want the challenge with the old game kept until a choice", m.phase)
+	}
+	m = key(m, "enter")
 	if m.phase != phaseOpening || m.rec.ID == old {
 		t.Fatalf("phase %v, want a new game", m.phase)
 	}
@@ -106,6 +122,7 @@ func TestFinishedGameIsSavedWithReaction(t *testing.T) {
 	games := &history.Store{Path: filepath.Join(t.TempDir(), "history.json")}
 	m := newWithHistory(t, games)
 	m = key(m, "n")
+	m = pickLength(t, m, 1)
 	m.board = game.Board{}
 	m.board.C[game.Human][1] = 1
 	m.board.C[game.Human][game.Off] = 14
@@ -175,6 +192,127 @@ func TestPlayScreenFitsTheFrame(t *testing.T) {
 		}
 		if w := ansi.StringWidth(strings.TrimSpace(ansi.Strip(lines[1]))) + 4; w != tt.want {
 			t.Errorf("terminal %d: frame is %d wide, want %d", tt.termW, w, tt.want)
+		}
+	}
+}
+
+// finishGame ends the current game with w winning a game of the given kind.
+func finishGame(t *testing.T, m Model, w game.Player, kind game.WinKind) Model {
+	t.Helper()
+	m.board = game.Board{}
+	m.board.C[w][game.Off] = 15
+	if kind == game.Single {
+		m.board.C[w.Opponent()][game.Off] = 1
+		m.board.C[w.Opponent()][3] = 14
+	} else {
+		m.board.C[w.Opponent()][13] = 15
+	}
+	m, _ = mustModel(m.endGame(w))
+	return m
+}
+
+func TestMatchPlaysToLengthForTheStakes(t *testing.T) {
+	games := &history.Store{Path: filepath.Join(t.TempDir(), "history.json")}
+	m := newWithHistory(t, games)
+	m = key(m, "n")
+	if m.phase != phaseOffer || m.offer.ready {
+		t.Fatalf("phase %v ready %v, want the challenge waiting on stakes", m.phase, m.offer.ready)
+	}
+	stakes := ai.Stakes{Offer: "Rum against your boots.", Theirs: "a bottle of rum", Yours: "your boots"}
+	m, _ = mustModel(m.Update(stakesMsg{m.offer.id - 1, ai.Stakes{Theirs: "stale", Yours: "stale"}, nil}))
+	if m.offer.ready {
+		t.Fatal("took stakes from an old challenge")
+	}
+	m, _ = mustModel(m.Update(stakesMsg{m.offer.id, stakes, nil}))
+	m = pickLength(t, m, 3)
+	if m.match == nil || m.match.Length != 3 || m.match.Stakes != stakes || m.rec.MatchID != m.match.ID {
+		t.Fatalf("match %+v", m.match)
+	}
+	if !strings.Contains(m.voiced().Voice, "your boots") {
+		t.Fatal("the persona isn't told about the stakes")
+	}
+
+	m = finishGame(t, m, game.Human, game.Gammon)
+	if !m.midMatch() || m.match.Score != [2]int{2, 0} || !strings.Contains(m.status, "next game") {
+		t.Fatalf("after a gammon: score %v status %q", m.match.Score, m.status)
+	}
+	first := m.rec.ID
+	m = key(m, " ")
+	if m.phase != phaseOpening || m.rec.ID == first || len(m.match.Games) != 2 {
+		t.Fatalf("phase %v games %v, want the match's second game", m.phase, m.match.Games)
+	}
+	if last := m.log[len(m.log)-1].text; !strings.HasPrefix(last, "Game 2. The score is you 2") {
+		t.Fatalf("log ends %q", last)
+	}
+
+	m = finishGame(t, m, game.AI, game.Single)
+	if !m.midMatch() || m.match.Score != [2]int{2, 1} {
+		t.Fatalf("score %v", m.match.Score)
+	}
+	m = key(m, " ")
+	m = finishGame(t, m, game.Human, game.Single)
+	if m.midMatch() || m.match.Status != history.Won || m.record.Matches != [2]int{1, 0} || m.record.Games != [2]int{2, 1} {
+		t.Fatalf("status %v record %+v", m.match.Status, m.record)
+	}
+	if last := m.log[len(m.log)-1].text; !strings.Contains(last, "win the match 3–1") || !strings.Contains(last, "a bottle of rum") {
+		t.Fatalf("log ends %q", last)
+	}
+
+	saved, err := games.LoadMatches()
+	if err != nil || len(saved) != 1 || saved[0].Status != history.Won || len(saved[0].Games) != 3 {
+		t.Fatalf("saved %+v, err %v", saved, err)
+	}
+	if m = newWithHistory(t, games); m.canResume() {
+		t.Fatal("a finished match is offered for resuming")
+	}
+	m = key(m, "n")
+	if m.record.Matches != [2]int{1, 0} || m.record.Games != [2]int{2, 1} {
+		t.Fatalf("record after restarting %+v", m.record)
+	}
+}
+
+func TestResumeBetweenGamesStartsNextGameOfMatch(t *testing.T) {
+	games := &history.Store{Path: filepath.Join(t.TempDir(), "history.json")}
+	m := newWithHistory(t, games)
+	m = key(m, "n")
+	m = pickLength(t, m, 5)
+	id := m.match.ID
+	m = finishGame(t, m, game.AI, game.Gammon)
+
+	m = newWithHistory(t, games)
+	if !m.canResume() || m.menu != menuResume || !strings.Contains(ansi.Strip(m.menuEntry(menuResume)), "0–2 to 5") {
+		t.Fatalf("resumable %v entry %q", m.canResume(), ansi.Strip(m.menuEntry(menuResume)))
+	}
+	m = key(m, "enter")
+	if m.phase != phaseOpening || m.match.ID != id || len(m.match.Games) != 2 || m.match.Score != [2]int{0, 2} {
+		t.Fatalf("phase %v match %+v", m.phase, m.match)
+	}
+
+	// Starting over abandons the match.
+	m = key(m, "m")
+	m = key(m, "n")
+	m = key(m, "y")
+	m = pickLength(t, m, 1)
+	if m.match != nil {
+		t.Fatal("a single game has a match")
+	}
+	saved, _ := games.LoadMatches()
+	if saved[0].Status != history.Abandoned {
+		t.Fatalf("old match is %v", saved[0].Status)
+	}
+}
+
+func TestChallengeScreenFitsTheFrame(t *testing.T) {
+	m := newWithHistory(t, nil)
+	m.width, m.height = frameW, 40
+	m = key(m, "n")
+	waiting := m.View()
+	m, _ = mustModel(m.Update(stakesMsg{m.offer.id, ai.Personas[5].Stakes[0], nil}))
+	for name, v := range map[string]string{"waiting": waiting, "offered": m.View()} {
+		for i, l := range strings.Split(v, "\n") {
+			if w := ansi.StringWidth(l); w != frameW {
+				t.Errorf("%s line %d is %d wide, want %d: %q", name, i, w, frameW, ansi.Strip(l))
+			}
 		}
 	}
 }

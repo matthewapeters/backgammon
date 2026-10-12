@@ -120,3 +120,56 @@ func TestSaveRefusesToClobberUnreadableFile(t *testing.T) {
 		t.Fatal("file was changed")
 	}
 }
+
+func TestMatchScoresGamesUntilLength(t *testing.T) {
+	t0 := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
+	m := NewMatch(ai.Personas[1], 3, ai.Stakes{Theirs: "rum", Yours: "boots"}, t0)
+	g1 := NewGame(m.Persona, [2]int{3, 1}, t0)
+	m.Add(g1)
+	g1.Finish(game.AI, game.Single)
+	if m.Record(g1) || m.Score != [2]int{0, 1} || g1.MatchID != m.ID {
+		t.Fatalf("after one game: score %v status %v", m.Score, m.Status)
+	}
+	g2 := NewGame(m.Persona, [2]int{1, 3}, t0.Add(time.Minute))
+	m.Add(g2)
+	if m.Record(g2) {
+		t.Fatal("an unfinished game ended the match")
+	}
+	g2.Finish(game.Human, game.Backgammon)
+	if !m.Record(g2) || m.Status != Won || m.Score != [2]int{3, 1} {
+		t.Fatalf("score %v status %v, want the human to win 3-1", m.Score, m.Status)
+	}
+
+	s := &Store{Path: filepath.Join(t.TempDir(), "history.json")}
+	for _, g := range []*Game{g1, g2} {
+		if err := s.Save(g); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SaveMatch(m); err != nil {
+		t.Fatal(err)
+	}
+	open := NewMatch(ai.Personas[1], 5, ai.Stakes{}, t0.Add(time.Hour))
+	if err := s.SaveMatch(open); err != nil {
+		t.Fatal(err)
+	}
+	// Saving a game again must keep the matches.
+	if err := s.Save(g1); err != nil {
+		t.Fatal(err)
+	}
+	games, _ := s.Load()
+	matches, err := s.LoadMatches()
+	if err != nil || len(matches) != 2 || matches[0].Games[1] != g2.ID || matches[0].Stakes.Yours != "boots" {
+		t.Fatalf("matches %+v, err %v", matches, err)
+	}
+	if got := LatestMatch(matches); got == nil || got.ID != open.ID {
+		t.Fatalf("latest open match %v", got)
+	}
+	r := Tally(games, matches, ai.Personas[1].Name)
+	if r.Games != [2]int{1, 1} || r.Matches != [2]int{1, 0} {
+		t.Fatalf("record %+v", r)
+	}
+	if r := Tally(games, matches, "Nobody"); r != (Record{}) {
+		t.Fatalf("record against nobody %+v", r)
+	}
+}

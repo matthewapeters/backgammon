@@ -31,8 +31,8 @@ func TestHumanBearsOffLastCheckerAndWins(t *testing.T) {
 	if m.phase != phaseGameOver || m.winner != game.Human {
 		t.Fatalf("phase %v winner %v, want game over with human winner", m.phase, m.winner)
 	}
-	if m.winKind != game.Gammon || m.score[game.Human] != 2 {
-		t.Fatalf("win %v score %v, want gammon worth 2", m.winKind, m.score)
+	if m.winKind != game.Gammon || m.record.Games[game.Human] != 1 {
+		t.Fatalf("win %v record %+v, want a gammon counted", m.winKind, m.record)
 	}
 }
 

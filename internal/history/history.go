@@ -1,5 +1,6 @@
 // Package history saves each game as it is played, turn by turn, so an
 // unfinished game can be resumed and finished games can be looked back on.
+// Games played as part of a match also belong to a Match record.
 package history
 
 import (
@@ -16,8 +17,8 @@ import (
 	"github.com/MatthewAPeters/backgammon/internal/game"
 )
 
-// fileVersion is the current history file format.
-const fileVersion = 1
+// fileVersion is the current history file format. Version 2 added matches.
+const fileVersion = 2
 
 // Status is where a game stands.
 type Status string
@@ -98,6 +99,8 @@ type Game struct {
 	// WinKind is 1 (single), 2 (gammon) or 3 (backgammon) once the game is won or lost.
 	WinKind game.WinKind `json:"win_kind,omitempty"`
 	Log     []Line       `json:"log"`
+	// MatchID is the match this game is part of, if any.
+	MatchID string `json:"match_id,omitempty"`
 }
 
 // NewGame starts a record for a game against p with the given opening roll.
@@ -169,9 +172,98 @@ func (g *Game) Replay(n int) (game.Board, error) {
 // Board is the position after every recorded turn.
 func (g *Game) Board() (game.Board, error) { return g.Replay(len(g.Turns)) }
 
+// Match is a series of games against one persona, played until one side
+// reaches Length points. Each game is worth 1, 2 or 3 points by its WinKind.
+type Match struct {
+	ID      string     `json:"id"`
+	Persona ai.Persona `json:"persona"`
+	Started time.Time  `json:"started"`
+	Updated time.Time  `json:"updated"`
+	Status  Status     `json:"status"`
+	Length  int        `json:"length"`
+	Stakes  ai.Stakes  `json:"stakes"`
+	// Score is the points won so far, indexed by game.Player.
+	Score [2]int `json:"score"`
+	// Games are the IDs of the match's games, in order.
+	Games []string `json:"games"`
+}
+
+// NewMatch starts a match to length points against p, for stakes s.
+func NewMatch(p ai.Persona, length int, s ai.Stakes, now time.Time) *Match {
+	return &Match{
+		ID:      "m" + now.UTC().Format("20060102T150405.000000000Z"),
+		Persona: p,
+		Started: now,
+		Updated: now,
+		Status:  InProgress,
+		Length:  length,
+		Stakes:  s,
+		Games:   []string{},
+	}
+}
+
+// Add makes g the match's next game.
+func (m *Match) Add(g *Game) {
+	g.MatchID = m.ID
+	m.Games = append(m.Games, g.ID)
+}
+
+// Record adds the points for a finished game and reports whether that won
+// the match.
+func (m *Match) Record(g *Game) (over bool) {
+	if g.Status != Won && g.Status != Lost {
+		return false
+	}
+	w := game.Human
+	if g.Status == Lost {
+		w = game.AI
+	}
+	m.Score[w] += int(g.WinKind)
+	if m.Score[w] < m.Length {
+		return false
+	}
+	m.Status = map[game.Player]Status{game.Human: Won, game.AI: Lost}[w]
+	return true
+}
+
+// Record is the player's results against one persona.
+type Record struct {
+	// Games and Matches count wins, indexed by game.Player.
+	Games, Matches [2]int
+}
+
+// Tally counts the finished games and matches against the persona named name.
+func Tally(games []*Game, matches []*Match, name string) Record {
+	var r Record
+	for _, g := range games {
+		if g.Persona.Name != name {
+			continue
+		}
+		switch g.Status {
+		case Won:
+			r.Games[game.Human]++
+		case Lost:
+			r.Games[game.AI]++
+		}
+	}
+	for _, m := range matches {
+		if m.Persona.Name != name {
+			continue
+		}
+		switch m.Status {
+		case Won:
+			r.Matches[game.Human]++
+		case Lost:
+			r.Matches[game.AI]++
+		}
+	}
+	return r
+}
+
 type file struct {
-	Version int     `json:"version"`
-	Games   []*Game `json:"games"`
+	Version int      `json:"version"`
+	Games   []*Game  `json:"games"`
+	Matches []*Match `json:"matches,omitempty"`
 }
 
 // Store keeps every game in one JSON file, oldest first.
@@ -190,43 +282,70 @@ func DefaultPath() (string, error) {
 
 // Load returns every saved game, or none if the file does not exist yet.
 func (s *Store) Load() ([]*Game, error) {
+	f, err := s.read()
+	return f.Games, err
+}
+
+// LoadMatches returns every saved match.
+func (s *Store) LoadMatches() ([]*Match, error) {
+	f, err := s.read()
+	return f.Matches, err
+}
+
+func (s *Store) read() (file, error) {
 	data, err := os.ReadFile(s.Path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return file{}, nil
 	}
 	if err != nil {
-		return nil, err
+		return file{}, err
 	}
 	var f file
 	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("reading %s: %w", s.Path, err)
+		return file{}, fmt.Errorf("reading %s: %w", s.Path, err)
 	}
 	if f.Version > fileVersion {
-		return nil, fmt.Errorf("%s is format version %d; this build reads up to %d", s.Path, f.Version, fileVersion)
+		return file{}, fmt.Errorf("%s is format version %d; this build reads up to %d", s.Path, f.Version, fileVersion)
 	}
-	return f.Games, nil
+	return f, nil
 }
 
 // Save writes g, replacing the saved game with the same ID. It rereads the
 // file first so it never clobbers a history it could not parse.
 func (s *Store) Save(g *Game) error {
-	games, err := s.Load()
+	f, err := s.read()
 	if err != nil {
 		return err
 	}
-	if i := slices.IndexFunc(games, func(x *Game) bool { return x.ID == g.ID }); i >= 0 {
-		games[i] = g
-	} else {
-		games = append(games, g)
-	}
-	return s.write(games)
+	f.Games = replace(f.Games, g, func(x *Game) bool { return x.ID == g.ID })
+	return s.write(f)
 }
 
-func (s *Store) write(games []*Game) error {
-	if games == nil {
-		games = []*Game{}
+// SaveMatch writes m, replacing the saved match with the same ID.
+func (s *Store) SaveMatch(m *Match) error {
+	f, err := s.read()
+	if err != nil {
+		return err
 	}
-	data, err := json.MarshalIndent(file{Version: fileVersion, Games: games}, "", "  ")
+	f.Matches = replace(f.Matches, m, func(x *Match) bool { return x.ID == m.ID })
+	return s.write(f)
+}
+
+// replace swaps v in for the element matching same, or appends it.
+func replace[T any](xs []T, v T, same func(T) bool) []T {
+	if i := slices.IndexFunc(xs, same); i >= 0 {
+		xs[i] = v
+		return xs
+	}
+	return append(xs, v)
+}
+
+func (s *Store) write(f file) error {
+	if f.Games == nil {
+		f.Games = []*Game{}
+	}
+	f.Version = fileVersion
+	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -253,6 +372,17 @@ func Latest(games []*Game) (last, unfinished *Game) {
 		}
 	}
 	return last, unfinished
+}
+
+// LatestMatch returns the most recently updated match still in progress, or nil.
+func LatestMatch(matches []*Match) *Match {
+	var out *Match
+	for _, m := range matches {
+		if m.Status == InProgress && (out == nil || !m.Updated.Before(out.Updated)) {
+			out = m
+		}
+	}
+	return out
 }
 
 // GameMoves converts t's moves back to game.Moves.

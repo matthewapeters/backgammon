@@ -102,7 +102,8 @@ func TestExtractJSON(t *testing.T) {
 
 func TestGeneratePersona(t *testing.T) {
 	srv := fakeServer(t, http.StatusOK, `{"name": "  Grumpy   Cat ", "tagline": "Unimpressed.",
-		"voice": "You are Grumpy Cat.", "fallback": ["No.", " ", "Ugh."], "win": ["Fine."], "lose": ["Whatever."]}`)
+		"voice": "You are Grumpy Cat.", "fallback": ["No.", " ", "Ugh."], "win": ["Fine."], "lose": ["Whatever."],
+		"stakes": [{"offer": " Bet? ", "theirs": " a nap spot ", "yours": "tuna"}, {"theirs": "", "yours": "x"}]}`)
 	p, err := NewClient(srv.URL, "").GeneratePersona(context.Background(), "grumpy cat")
 	if err != nil {
 		t.Fatal(err)
@@ -112,6 +113,37 @@ func TestGeneratePersona(t *testing.T) {
 	}
 	if len(p.Fallback) != 2 || p.Win[0] != "Fine." || p.Lose[0] != "Whatever." {
 		t.Fatalf("lines not cleaned: %+v", p)
+	}
+	if len(p.Stakes) != 1 || p.Stakes[0] != (Stakes{"Bet?", "a nap spot", "tuna"}) {
+		t.Fatalf("stakes not cleaned: %+v", p.Stakes)
+	}
+}
+
+func TestOfferStakes(t *testing.T) {
+	srv := fakeServer(t, http.StatusOK, `{"offer": "Rum against your boots.", "theirs": " a bottle of rum", "yours": "your boots"}`)
+	s, err := NewClient(srv.URL, "").OfferStakes(context.Background(), Personas[1])
+	if err != nil || s != (Stakes{"Rum against your boots.", "a bottle of rum", "your boots"}) {
+		t.Fatalf("got %+v, %v", s, err)
+	}
+	srv = fakeServer(t, http.StatusOK, `{"offer": "Hmm.", "theirs": "rum", "yours": " "}`)
+	if _, err := NewClient(srv.URL, "").OfferStakes(context.Background(), Personas[1]); err == nil {
+		t.Fatal("accepted stakes with nothing from the player")
+	}
+}
+
+func TestEveryPersonaHasFallbackStakes(t *testing.T) {
+	for _, p := range Personas {
+		if len(p.Stakes) == 0 {
+			t.Errorf("%s has no stakes", p.Name)
+		}
+		for _, s := range p.Stakes {
+			if s.Offer == "" || s.Theirs == "" || s.Yours == "" {
+				t.Errorf("%s has incomplete stakes %+v", p.Name, s)
+			}
+		}
+	}
+	if s := FallbackStakes(Persona{Name: "Nobody"}); s.Theirs == "" || s.Yours == "" {
+		t.Fatalf("generic stakes %+v", s)
 	}
 }
 

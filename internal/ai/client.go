@@ -269,6 +269,9 @@ func (c *Client) GeneratePersona(ctx context.Context, description string) (Perso
 		"character's instructions.\n" +
 		"- fallback: three short in-character lines to say after making a move.\n" +
 		"- win: one line for winning the game. lose: one line for losing it.\n" +
+		"- stakes: one bet the character offers before a match. theirs is a good or service the character " +
+		"owns or can do, and yours a comparable one from the player that the character would want, both as " +
+		"short noun phrases without \"my\". offer is how the character proposes the bet.\n" +
 		"Keep it fun and PG-13: no slurs, hate or sexual content.\n\n" +
 		"Example:\n" + string(example)
 
@@ -284,14 +287,16 @@ func (c *Client) GeneratePersona(ctx context.Context, description string) (Perso
 		Fallback any `json:"fallback"`
 		Win      any `json:"win"`
 		Lose     any `json:"lose"`
+		Stakes   any `json:"stakes"`
 	}
 	schema := map[string]any{
-		"type":       "object",
-		"properties": properties{str(40), str(80), str(700), lines(3), lines(1), lines(1)},
-		"required":   []string{"name", "tagline", "voice", "fallback", "win", "lose"},
+		"type": "object",
+		"properties": properties{str(40), str(80), str(700), lines(3), lines(1), lines(1),
+			map[string]any{"type": "array", "items": stakesSchema, "minItems": 1, "maxItems": 1}},
+		"required": []string{"name", "tagline", "voice", "fallback", "win", "lose", "stakes"},
 	}
 
-	text, err := c.chatN(ctx, system, "Character: "+description, schema, 800)
+	text, err := c.chatN(ctx, system, "Character: "+description, schema, 1000)
 	if err != nil {
 		return Persona{}, err
 	}
@@ -303,11 +308,86 @@ func (c *Client) GeneratePersona(ctx context.Context, description string) (Perso
 	p.Tagline = strings.TrimSpace(p.Tagline)
 	p.Voice = strings.TrimSpace(p.Voice)
 	p.Fallback, p.Win, p.Lose = cleanLines(p.Fallback), cleanLines(p.Win), cleanLines(p.Lose)
+	var stakes []Stakes
+	for _, s := range p.Stakes {
+		if s.clean() {
+			stakes = append(stakes, s)
+		}
+	}
+	p.Stakes = stakes
 	p.Prompt = description
 	if p.Name == "" || p.Voice == "" {
 		return Persona{}, fmt.Errorf("persona is missing a name or voice: %q", text)
 	}
 	return p, nil
+}
+
+// stakesSchema is the JSON schema for a Stakes, in the order it is written.
+var stakesSchema = map[string]any{
+	"type": "object",
+	"properties": struct {
+		Offer  any `json:"offer"`
+		Theirs any `json:"theirs"`
+		Yours  any `json:"yours"`
+	}{
+		map[string]any{"type": "string", "minLength": 1, "maxLength": 300},
+		map[string]any{"type": "string", "minLength": 1, "maxLength": 80},
+		map[string]any{"type": "string", "minLength": 1, "maxLength": 80},
+	},
+	"required": []string{"offer", "theirs", "yours"},
+}
+
+// clean trims s and reports whether it names both stakes.
+func (s *Stakes) clean() bool {
+	s.Offer, s.Theirs, s.Yours = strings.TrimSpace(s.Offer), strings.TrimSpace(s.Theirs), strings.TrimSpace(s.Yours)
+	return s.Theirs != "" && s.Yours != ""
+}
+
+// OfferStakes has the persona propose what to bet on a match.
+func (c *Client) OfferStakes(ctx context.Context, p Persona) (Stakes, error) {
+	system := p.Voice + "\n\n" +
+		"You are about to challenge the player to a backgammon match, and you want to make it interesting " +
+		"with a friendly bet. Put up a good or service that you, as this character, own or can do, and demand " +
+		"a comparable good or service from the player that you would actually want. Be specific, vivid and " +
+		"funny; keep it PG-13.\n" +
+		"Reply ONLY with JSON: {\"offer\": \"<one or two sentences, in character, proposing the bet>\", " +
+		"\"theirs\": \"<what you put up, a short noun phrase without 'my', e.g. a bottle of thirty-year rum>\", " +
+		"\"yours\": \"<what the player puts up, a short noun phrase, e.g. a week of swabbing the deck>\"}."
+	text, err := c.chat(ctx, system, "Propose the stakes.", stakesSchema)
+	if err != nil {
+		return Stakes{}, err
+	}
+	var s Stakes
+	if err := json.Unmarshal([]byte(extractJSON(text)), &s); err != nil {
+		return Stakes{}, fmt.Errorf("unparseable stakes %q: %w", text, err)
+	}
+	if !s.clean() {
+		return Stakes{}, fmt.Errorf("stakes are missing a side: %q", text)
+	}
+	return s, nil
+}
+
+// FallbackStakes returns one of p's canned bets, or a generic one.
+func FallbackStakes(p Persona) Stakes {
+	if len(p.Stakes) == 0 {
+		return Stakes{
+			Offer:  "Let's make this interesting. Bragging rights, and the loser buys dinner.",
+			Theirs: "dinner, on them",
+			Yours:  "dinner, on you",
+		}
+	}
+	return p.Stakes[rand.IntN(len(p.Stakes))]
+}
+
+// InMatch returns p playing a match to length points, with the persona on
+// mine points and the player on theirs, so its lines can bring up the score
+// and the stakes.
+func (p Persona) InMatch(length, mine, theirs int, s Stakes) Persona {
+	p.Voice += fmt.Sprintf("\n\nYou are playing a %d-point match against the player. The score is "+
+		"you %d, the player %d. The stakes: if you win the match, the player owes you %s; if you lose, "+
+		"you must hand over %s. Bring up the stakes now and then when you taunt.",
+		length, mine, theirs, s.Yours, s.Theirs)
+	return p
 }
 
 func cleanLines(in []string) []string {

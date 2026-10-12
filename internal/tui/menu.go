@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/MatthewAPeters/backgammon/internal/ai"
+	"github.com/MatthewAPeters/backgammon/internal/game"
 )
 
 // Main menu entries, in order.
@@ -27,7 +28,7 @@ func (m Model) keyMenu(k string) (tea.Model, tea.Cmd) {
 	if m.confirmNew {
 		switch k {
 		case "y", "Y":
-			return m.startGame()
+			return m.challenge()
 		case "n", "N", "esc":
 			m.confirmNew = false
 			m.menuNote = ""
@@ -66,10 +67,14 @@ func (m Model) chooseMenu(item int) (tea.Model, tea.Cmd) {
 	case menuNew:
 		if m.canResume() {
 			m.confirmNew = true
-			m.menuNote = fmt.Sprintf("Your game against the %s isn't finished. Abandon it and start a new one? (y/n)", m.rec.Persona.Name)
+			what, p := "game", m.rec.Persona
+			if m.midMatch() {
+				what, p = "match", m.match.Persona
+			}
+			m.menuNote = fmt.Sprintf("Your %s against the %s isn't finished. Abandon it and start a new one? (y/n)", what, p.Name)
 			return m, nil
 		}
-		return m.startGame()
+		return m.challenge()
 	case menuResume:
 		if m.canResume() {
 			return m.resume()
@@ -134,9 +139,13 @@ func (m Model) menuEntry(i int) string {
 	label := [menuItems]string{"New game", "Resume", "Choose opponent", "About the game", "Quit"}[i]
 	disabled := false
 	if i == menuResume {
-		if m.canResume() {
+		switch {
+		case m.midMatch():
+			label = fmt.Sprintf("Resume · %s match, %d–%d to %d", shortName(m.match.Persona),
+				m.match.Score[game.Human], m.match.Score[game.AI], m.match.Length)
+		case m.canResume():
 			label = fmt.Sprintf("Resume · vs %s, turn %d", shortName(m.rec.Persona), len(m.rec.Turns)+1)
-		} else {
+		default:
 			label = "Resume · no unfinished game"
 			disabled = true
 		}

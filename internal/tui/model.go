@@ -26,6 +26,7 @@ const (
 	phasePersona          // choosing an opponent
 	phaseNewPersona       // typing a description of a new opponent
 	phaseGenerating       // waiting for the LLM to write the new opponent
+	phaseOffer            // the opponent proposes stakes; choosing the match length
 	phaseOpening
 	phaseHumanRoll
 	phaseHumanMove
@@ -71,7 +72,20 @@ type Model struct {
 	rec      *history.Game
 	games    *history.Store // nil means games are not saved
 	saveNote string         // why the last save failed, if it did
-	scoreVs  string         // the persona the score is kept against
+
+	// match is the current match, nil for a single game. Between games it
+	// is the unfinished match the menu offers to resume.
+	match    *history.Match
+	record   history.Record // results against recordVs
+	recordVs string
+
+	// The challenge: the persona's proposed stakes and the chosen length.
+	offer struct {
+		pick   int // index into matchLengths
+		stakes ai.Stakes
+		ready  bool // the stakes have been proposed
+		id     int  // ignores stakes from an abandoned challenge
+	}
 
 	phase phase
 	board game.Board
@@ -103,7 +117,6 @@ type Model struct {
 	opening   [2]int // opening roll: human, AI
 	winner    game.Player
 	winKind   game.WinKind
-	score     [2]int
 	log       []logEntry
 	status    string
 	llmStatus string
@@ -124,6 +137,7 @@ func New(client *ai.Client, store *ai.PersonaStore, games *history.Store) Model 
 	styleInput(&in)
 	m := Model{client: client, spinner: sp, selected: -1, aiLast: [2]int{-1, -1},
 		roster: slices.Clone(ai.Personas), store: store, games: games, input: in}
+	m.offer.pick = slices.Index(matchLengths, 3)
 	if store != nil {
 		custom, err := store.Load()
 		if err != nil {
@@ -137,11 +151,16 @@ func New(client *ai.Client, store *ai.PersonaStore, games *history.Store) Model 
 		if err != nil {
 			m.menuNote = "Couldn't load your game history: " + shortErr(err)
 		}
+		matches, _ := games.LoadMatches()
 		last, unfinished := history.Latest(saved)
 		if last != nil {
 			m.persona = last.Persona
 		}
 		m.rec = unfinished
+		m.match = history.LatestMatch(matches)
+		if unfinished != nil && (m.match == nil || unfinished.MatchID != m.match.ID) {
+			m.match = nil // the unfinished game is a single game
+		}
 	}
 	// Prefer the roster's copy, which may have been edited since.
 	if i := slices.IndexFunc(m.roster, func(p ai.Persona) bool { return p.Name == m.persona.Name }); i >= 0 {
@@ -186,7 +205,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if m.phase != phaseAIThinking && m.phase != phaseGenerating {
+		if m.phase != phaseAIThinking && m.phase != phaseGenerating && !(m.phase == phaseOffer && !m.offer.ready) {
 			return m, nil
 		}
 		var cmd tea.Cmd
@@ -217,6 +236,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case personaMsg:
 		return m.personaCreated(msg)
 
+	case stakesMsg:
+		return m.stakesProposed(msg)
+
 	case reactionMsg:
 		// The player may have moved on to another game already.
 		if m.rec != nil && m.rec.ID == msg.gameID {
@@ -242,6 +264,8 @@ func (m Model) handleKey(k string) (tea.Model, tea.Cmd) {
 		return m.keyAbout(k)
 	case phasePersona:
 		return m.keyPersona(k)
+	case phaseOffer:
+		return m.keyOffer(k)
 	case phaseGenerating:
 		if k == "esc" {
 			m.genID++
@@ -272,9 +296,18 @@ func (m Model) handleKey(k string) (tea.Model, tea.Cmd) {
 		}
 		return m.keyMove(k)
 	case phaseGameOver:
+		if m.midMatch() {
+			switch k {
+			case "n", "enter", " ", "space":
+				return m.newGame()
+			case "m":
+				return m.toMenu(), nil
+			}
+			return m, nil
+		}
 		switch k {
 		case "n", "enter", " ", "space":
-			return m.startGame()
+			return m.challenge()
 		case "p":
 			m.phase = phasePersona
 		case "m":
@@ -296,8 +329,11 @@ func (m Model) toMenu() Model {
 	return m
 }
 
-// canResume reports whether there is an unfinished game to go back to.
-func (m Model) canResume() bool { return m.rec != nil && m.rec.Status == history.InProgress }
+// canResume reports whether there is an unfinished game or match to go back to.
+func (m Model) canResume() bool { return m.gameUnfinished() || m.midMatch() }
+
+// gameUnfinished reports whether m.rec is a game still being played.
+func (m Model) gameUnfinished() bool { return m.rec != nil && m.rec.Status == history.InProgress }
 
 func isConfirm(k string) bool { return k == "enter" || k == " " || k == "space" }
 
@@ -340,31 +376,31 @@ func (m *Model) warmup() tea.Cmd {
 	}
 }
 
-// sitDown prepares to play m.persona: the score restarts when the opponent changes.
+// sitDown prepares to play m.persona, loading the player's record against
+// it. Without saved games the record only covers this session.
 func (m *Model) sitDown() {
-	if m.scoreVs != m.persona.Name {
-		m.score = [2]int{}
-		m.scoreVs = m.persona.Name
+	if m.games != nil {
+		games, _ := m.games.Load()
+		matches, _ := m.games.LoadMatches()
+		m.record = history.Tally(games, matches, m.persona.Name)
+	} else if m.recordVs != m.persona.Name {
+		m.record = history.Record{}
 	}
+	m.recordVs = m.persona.Name
 	m.menuNote = ""
 	m.confirmNew = false
 }
 
-// startGame starts a new game against m.persona. Callers check that an
-// unfinished game may be abandoned first.
-func (m Model) startGame() (tea.Model, tea.Cmd) {
-	if m.canResume() {
-		m.rec.Status = history.Abandoned
-		m.save()
-	}
-	m.sitDown()
-	warm := m.warmup()
-	next, cmd := m.newGame()
-	return next, tea.Batch(cmd, warm)
-}
-
-// resume continues the unfinished game in m.rec where it left off.
+// resume continues the unfinished game in m.rec where it left off, or
+// starts the next game of an unfinished match.
 func (m Model) resume() (tea.Model, tea.Cmd) {
+	if !m.gameUnfinished() {
+		m.persona = m.match.Persona
+		m.sitDown()
+		warm := m.warmup()
+		next, cmd := m.newGame()
+		return next, tea.Batch(cmd, warm)
+	}
 	rec := m.rec
 	board, err := rec.Board()
 	if err != nil {
@@ -496,8 +532,15 @@ func (m Model) newGame() (tea.Model, tea.Cmd) {
 		}
 	}
 	m.rec = history.NewGame(m.persona, m.opening, time.Now())
+	if m.match != nil {
+		m.match.Add(m.rec)
+		m.saveMatch()
+	}
 	m.log = nil
 	m.say("", fmt.Sprintf("You sit down across from the %s.", m.persona.Name))
+	if m.match != nil {
+		m.announceMatch()
+	}
 	m.save()
 	m.phase = phaseOpening
 	m.status = m.openingStatus()
@@ -709,7 +752,7 @@ func (m Model) startAITurn(d game.Dice) (tea.Model, tea.Cmd) {
 	m.made = nil
 	m.selected = -1
 	m.status = fmt.Sprintf("%s rolled %s and is thinking…", m.persona.Name, d)
-	client, persona, board, review := m.client, m.persona, m.board, m.review
+	client, persona, board, review := m.client, m.voiced(), m.board, m.review
 	think := func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
@@ -766,16 +809,45 @@ func (m Model) endGame(w game.Player) (tea.Model, tea.Cmd) {
 	m.phase = phaseGameOver
 	m.winner = w
 	m.winKind = m.board.WinType(w)
-	m.score[w] += int(m.winKind)
+	m.record.Games[w]++
 	if m.rec != nil {
 		m.rec.Finish(w, m.winKind)
 		m.save()
 	}
+	matchOver := false
+	if m.match != nil && m.rec != nil {
+		matchOver = m.match.Record(m.rec)
+		if matchOver {
+			m.record.Matches[w]++
+		}
+		m.saveMatch()
+	}
+
 	pts := int(m.winKind)
-	if w == game.Human {
-		m.status = fmt.Sprintf("You win a %s (%d pt)! n: new game · p: change opponent · m: menu", m.winKind, pts)
-	} else {
-		m.status = fmt.Sprintf("%s wins a %s (%d pt). n: new game · p: change opponent · m: menu", m.persona.Name, m.winKind, pts)
+	aiWon := w == game.AI
+	result := fmt.Sprintf("You win a %s (%d pt)!", m.winKind, pts)
+	if aiWon {
+		result = fmt.Sprintf("%s wins a %s (%d pt).", m.persona.Name, m.winKind, pts)
+	}
+	situation := fmt.Sprintf("The backgammon game just ended. You %s by a %s. React to the result.",
+		map[bool]string{true: "WON", false: "LOST"}[aiWon], m.winKind)
+	switch {
+	case matchOver:
+		situation = m.matchResult(w)
+		result = fmt.Sprintf("You win the match %d–%d!", m.match.Score[game.Human], m.match.Score[game.AI])
+		if aiWon {
+			result = fmt.Sprintf("%s wins the match %d–%d.", m.persona.Name, m.match.Score[game.AI], m.match.Score[game.Human])
+		}
+		m.status = result + " n: new game · p: change opponent · m: menu"
+	case m.midMatch():
+		situation = fmt.Sprintf("You just %s a game of your %d-point backgammon match by a %s, worth %d. "+
+			"The match score is now you %d, the player %d. React, and needle the player about the stakes.",
+			map[bool]string{true: "WON", false: "LOST"}[aiWon], m.match.Length, m.winKind, pts,
+			m.match.Score[game.AI], m.match.Score[game.Human])
+		m.status = fmt.Sprintf("%s You %d, %s %d, to %d. space: next game · m: menu",
+			result, m.match.Score[game.Human], shortName(m.persona), m.match.Score[game.AI], m.match.Length)
+	default:
+		m.status = result + " n: new game · p: change opponent · m: menu"
 	}
 
 	client, persona := m.client, m.persona
@@ -783,9 +855,6 @@ func (m Model) endGame(w game.Player) (tea.Model, tea.Cmd) {
 	if m.rec != nil {
 		id = m.rec.ID
 	}
-	aiWon := w == game.AI
-	situation := fmt.Sprintf("The backgammon game just ended. You %s by a %s. React to the result.",
-		map[bool]string{true: "WON", false: "LOST"}[aiWon], m.winKind)
 	react := func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()

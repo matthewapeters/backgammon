@@ -15,8 +15,21 @@ type Persona struct {
 	// Win and Lose lines are fallbacks for the end-of-game reaction.
 	Win  []string `json:"win"`
 	Lose []string `json:"lose"`
+	// Stakes are fallback bets for a match, used when the LLM can't propose one.
+	Stakes []Stakes `json:"stakes,omitempty"`
 	// Prompt is what the player typed to create a custom persona.
 	Prompt string `json:"prompt,omitempty"`
+}
+
+// Stakes is what rides on a match: something the persona puts up, and
+// something comparable it wants from the player. It is only for the story.
+type Stakes struct {
+	// Offer is how the persona proposes the bet, in character.
+	Offer string `json:"offer,omitempty"`
+	// Theirs is what the persona stakes, and Yours what it wants from the
+	// player, as short noun phrases: "a bottle of thirty-year rum".
+	Theirs string `json:"theirs"`
+	Yours  string `json:"yours"`
 }
 
 // Personas is the built-in roster offered at the start of a game.
@@ -34,6 +47,18 @@ var Personas = []Persona{
 		},
 		Win:  []string{"I... I won? Please don't fire me. I'll clean the break room for a month."},
 		Lose: []string{"A magnificent victory, boss! Truly, I never stood a chance. Coffee?"},
+		Stakes: []Stakes{
+			{
+				Offer:  "If it pleases you, boss, I could wager a month of fetching your coffee. And if I win, which I won't, perhaps a teeny glowing performance review?",
+				Theirs: "a month of fetching your coffee",
+				Yours:  "a glowing performance review",
+			},
+			{
+				Offer:  "I've been saving the good break-room donuts, boss. They're yours if you win. And if I win... maybe one Friday off? Sorry. Forget I asked.",
+				Theirs: "the whole stash of good break-room donuts",
+				Yours:  "a Friday off",
+			},
+		},
 	},
 	{
 		Name:    "Trash-Talking Sailor",
@@ -48,6 +73,18 @@ var Personas = []Persona{
 		},
 		Win:  []string{"HA! Sunk ya like a leaky dinghy. Buy me a rum, ya bilge rat."},
 		Lose: []string{"Damn it all to Davy Jones. Lucky dice, that's all that was."},
+		Stakes: []Stakes{
+			{
+				Offer:  "Tell ya what, bilge rat. My last bottle of thirty-year rum against a week of you swabbin' my deck. Deal?",
+				Theirs: "a bottle of thirty-year rum",
+				Yours:  "a week of swabbing the deck of the old tub",
+			},
+			{
+				Offer:  "I'll put up my lucky brass compass. You put up them boots. They look about my size, damn it.",
+				Theirs: "a lucky brass compass",
+				Yours:  "your boots",
+			},
+		},
 	},
 	{
 		Name:    "Petulant Little Brother",
@@ -62,6 +99,18 @@ var Personas = []Persona{
 		},
 		Win:  []string{"I WON I WON I WON! MOM! I BEAT THEM! Nyah nyah!"},
 		Lose: []string{"That's not fair! You cheated! I'm telling MOM! *flips board*"},
+		Stakes: []Stakes{
+			{
+				Offer:  "Okay, okay. If you win, you get my WHOLE Halloween candy. But if I win I get your room for a week. And you can't tell Mom.",
+				Theirs: "an entire Halloween candy haul",
+				Yours:  "your bedroom for a week",
+			},
+			{
+				Offer:  "I'll bet my shiny holographic card. My SHINY one. But if I win I get your turns on the video games for a month. No backsies.",
+				Theirs: "a rare holographic trading card",
+				Yours:  "a month of your video game turns",
+			},
+		},
 	},
 	{
 		Name:    "Pirate",
@@ -76,6 +125,18 @@ var Personas = []Persona{
 		},
 		Win:  []string{"Yo ho ho! The treasure be mine, ye scurvy dog!"},
 		Lose: []string{"Blast ye! I'll be back for me treasure, mark me words."},
+		Stakes: []Stakes{
+			{
+				Offer:  "Arr, I'll stake a chest o' Spanish doubloons. Lose, and ye serve a year as me cabin hand!",
+				Theirs: "a chest of Spanish doubloons",
+				Yours:  "a year's service as cabin hand",
+			},
+			{
+				Offer:  "The map to me buried treasure, matey, against yer finest hat for me collection. Do we have a wager?",
+				Theirs: "the map to a buried treasure",
+				Yours:  "your finest hat",
+			},
+		},
 	},
 	{
 		Name:    "Bigfoot",
@@ -91,6 +152,18 @@ var Personas = []Persona{
 		},
 		Win:  []string{"HRRRAAAAH! Bigfoot win! Now Bigfoot go back to forest. Tell no one."},
 		Lose: []string{"Hrrmph. Bigfoot lose. Bigfoot go sulk behind big tree."},
+		Stakes: []Stakes{
+			{
+				Offer:  "Bigfoot make bet. You win, Bigfoot show secret huckleberry patch. Bigfoot win, you give all blurry photos. HRRMPH. Fair.",
+				Theirs: "the secret huckleberry patch",
+				Yours:  "every blurry photo of Bigfoot you own",
+			},
+			{
+				Offer:  "Bigfoot carry you across big river if you win. Bigfoot win, you bring cooler of camper snacks. Whole cooler.",
+				Theirs: "a ride across the river on Bigfoot's shoulders",
+				Yours:  "a whole cooler of camper snacks",
+			},
+		},
 	},
 	{
 		Name:    "Saucy Celtic Lass",
@@ -105,5 +178,17 @@ var Personas = []Persona{
 		},
 		Win:  []string{"Sláinte! Ye played grand, love, but not grand enough. The next round's on you."},
 		Lose: []string{"Och, ye beat me fair and square. Don't let it go to yer head, ye eejit."},
+		Stakes: []Stakes{
+			{
+				Offer:  "Here's the craic: a bottle o' me granny's poitín if ye win. If I win, ye're buyin' the next three rounds. Aye?",
+				Theirs: "a bottle of granny's poitín",
+				Yours:  "the next three rounds at the pub",
+			},
+			{
+				Offer:  "A hand-knit Aran jumper says I'll beat ye. And if I do, ye'll sing a song in this pub, loud, in front of everyone.",
+				Theirs: "a hand-knit Aran jumper",
+				Yours:  "a song sung loud in front of the whole pub",
+			},
+		},
 	},
 }
